@@ -761,4 +761,4 @@ def scikit_tt_traj(sim_params_class: SimulationParameters):
 
     avg_min_max_traj_time = [np.mean(traj_time_list), np.min(traj_time_list), np.max(traj_time_list)]
 
-    return t, exp_vals, d_On_d_gk, avg_min_max_traj_time
+    return t, exp_vals, d_On_d_gk, avg_min_max_traj_time, results
