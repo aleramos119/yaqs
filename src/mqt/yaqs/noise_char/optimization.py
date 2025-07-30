@@ -226,12 +226,35 @@ class loss_class_2d(loss_class):
         diff = self.exp_vals_traj - self.ref_traj
 
 
-        f = np.sum(diff**2)
+        # f = np.sum(diff**2)
 
-        ## I reshape diff so it has a shape compatible with d_On_d_gk (n_jump_site, n_obs_site, L, nt) to do elemtwise multiplication.
-        ## Then I sum over the n_obs_site, L and nt dimensions to get the gradient for each gamma,
-        ##  returning a vector of shape (n_jump_site)
-        grad = np.sum(2 * diff.reshape(1,n_obs_site, L, nt) * self.d_On_d_gk, axis=(1,2,3))
+        # ## I reshape diff so it has a shape compatible with d_On_d_gk (n_jump_site, n_obs_site, L, nt) to do elemtwise multiplication.
+        # ## Then I sum over the n_obs_site, L and nt dimensions to get the gradient for each gamma,
+        # ##  returning a vector of shape (n_jump_site)
+        # grad = np.sum(2 * diff.reshape(1,n_obs_site, L, nt) * self.d_On_d_gk, axis=(1,2,3))
+
+
+
+
+        f = 0.0
+
+        grad = np.zeros(self.d)
+
+        grad[0] = 0
+        grad[1] = 0
+
+
+        for i in range(n_obs_site):
+            for j in range(L):
+                for k in range(nt):
+
+                    f += (self.exp_vals_traj[i,j,k] - self.ref_traj[i,j,k])**2
+
+                    # I have to add all the derivatives with respect to the same gamma_relaxation and gamma_dephasing
+                    grad[0] += 2*(self.exp_vals_traj[i,j,k] - self.ref_traj[i,j,k]) * self.d_On_d_gk[0,i,j,k]
+
+                    grad[1] += 2*(self.exp_vals_traj[i,j,k] - self.ref_traj[i,j,k]) * self.d_On_d_gk[1,i,j,k]
+
 
 
         self.post_process(x.copy(),f, grad.copy())
