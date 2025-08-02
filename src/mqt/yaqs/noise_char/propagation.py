@@ -215,9 +215,9 @@ def qutip_traj(sim_params_class: SimulationParameters):
 
 
 
-from memory_profiler import profile
+# from memory_profiler import profile
 
-@profile
+# @profile
 def tjm_traj(sim_params_class: SimulationParameters):
 
     T = sim_params_class.T
