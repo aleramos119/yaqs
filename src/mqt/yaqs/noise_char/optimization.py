@@ -71,7 +71,9 @@ class loss_class:
         self.compute_diff_avg()
 
 
-        self.write_opt_traj()
+        self.write_opt_traj(self.exp_vals_traj, file_name=f"/opt_traj_{self.n_eval}.txt")
+        self.write_opt_traj(self.exp_vals_traj - self.ref_traj, file_name=f"/diff_traj_{self.n_eval}.txt")
+        self.write_dOn_d_gk_traj()
 
         # self.log_garbage()
 
@@ -162,7 +164,7 @@ class loss_class:
             file.write(f"{self.n_eval}  {unreachable} \n")
 
 
-    def write_opt_traj(self):
+    def write_opt_traj(self, exp_vals_traj, file_name=None):
         """
         Write the reference trajectory to a file.
         
@@ -172,9 +174,9 @@ class loss_class:
         - file_name: Name of the output file.
         """
 
-        n_obs_site, L, n_t = self.exp_vals_traj.shape
+        n_obs_site, L, n_t = exp_vals_traj.shape
 
-        exp_vals_traj_reshaped = self.exp_vals_traj.reshape(-1, self.exp_vals_traj.shape[-1])
+        exp_vals_traj_reshaped = exp_vals_traj.reshape(-1, exp_vals_traj.shape[-1])
 
         exp_vals_traj_with_t=np.concatenate([np.array([self.t]), exp_vals_traj_reshaped], axis=0)
 
@@ -182,7 +184,26 @@ class loss_class:
         ## Saving reference trajectory and gammas
         header =   "t  " +  "  ".join([obs+str(i)   for obs in ["x","y","z"][:n_obs_site] for i in range(L) ])
 
-        np.savetxt(self.work_dir + f"/opt_traj_{self.n_eval}.txt" , exp_vals_traj_with_t.T, header=header, fmt='%.6f')
+        np.savetxt(self.work_dir + file_name , exp_vals_traj_with_t.T, header=header, fmt='%.6f')
+
+
+    def write_dOn_d_gk_traj(self):
+        """
+        Write the reference trajectory to a file.
+        
+        Parameters:
+        - t: Time array.
+        - ref_traj: Reference trajectory data.
+        - file_name: Name of the output file.
+        """
+
+        n_jump_site, n_obs_site, L, n_t = self.d_On_d_gk.shape
+
+        d_On_d_gk_traj_reshaped = self.d_On_d_gk.reshape(n_jump_site* n_obs_site*L, n_t)
+
+
+
+        np.savetxt(self.work_dir + f"/d_On_d_gk_traj_{self.n_eval}.txt" , d_On_d_gk_traj_reshaped.T, fmt='%.6f')
 
 
 
