@@ -69,7 +69,7 @@ class SimulationParameters:
     req_cpus: int = 1
 
 
-    scikit_tt_solver: dict = {"solver": 'tdvp1', "method": 'krylov', "dimension": 5}
+    scikit_tt_solver = "tdvp1"
 
 
     def __init__(self, L : int, gamma_rel : list | float, gamma_deph : list | float):
