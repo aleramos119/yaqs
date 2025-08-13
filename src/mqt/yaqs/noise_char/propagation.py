@@ -59,7 +59,7 @@ class SimulationParameters:
     observables = ['x','y','z']
 
     threshold: float = 1e-6
-    max_bond_dim: int = 4
+    max_bond_dim: int = 8
     order: int = 2
 
     # For scikit_tt
