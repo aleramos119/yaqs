@@ -290,19 +290,18 @@ class loss_class_nd(loss_class):
 
         start_time = time.time()
 
-        t, exp_vals_traj, d_On_d_gk, avg_min_max_traj_time = self.traj_der(self.sim_params) 
-
+        self.t, self.exp_vals_traj, self.d_On_d_gk, avg_min_max_traj_time = self.traj_der(self.sim_params) 
 
         end_time = time.time()
 
 
-        self.t = t.copy()
-        self.exp_vals_traj = exp_vals_traj.copy() 
+        # self.t = t.copy()
+        # self.exp_vals_traj = exp_vals_traj.copy() 
 
-        n_jump_site, n_obs_site, L, nt = np.shape(d_On_d_gk)
+        n_jump_site, n_obs_site, L, nt = np.shape(self.d_On_d_gk)
 
 
-        diff = exp_vals_traj - self.ref_traj
+        diff = self.exp_vals_traj - self.ref_traj
 
 
         f = np.sum(diff**2)
@@ -310,7 +309,7 @@ class loss_class_nd(loss_class):
         ## I reshape diff so it has a shape compatible with d_On_d_gk (n_jump_site, n_obs_site, L, nt) to do elemtwise multiplication.
         ## Then I sum over the n_obs_site and nt dimensions to get the gradient for each gamma for each site,
         ##  returning a matrix of shape (n_jump_site, L) which I then flatten obtaining a vector of shape (n_jump_site*L) 
-        grad = np.sum(2 * diff.reshape(1,n_obs_site, L, nt) * d_On_d_gk, axis=(1,3)).flatten()
+        grad = np.sum(2 * diff.reshape(1,n_obs_site, L, nt) * self.d_On_d_gk, axis=(1,3)).flatten()
 
         self.post_process(x.copy(),f, grad.copy())
 
