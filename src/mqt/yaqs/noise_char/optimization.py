@@ -89,11 +89,12 @@ class loss_class:
         self.diff_avg_history = []
 
     def set_history(self, x_history, f_history, x_avg_history, diff_avg_history):
+
         self.n_eval = len(x_history)
-        self.x_history = list(x_history)
-        self.f_history = list(f_history)
-        self.x_avg_history = list(x_avg_history)
-        self.diff_avg_history = list(diff_avg_history)
+        self.x_history = [np.copy(x) for x in x_history]
+        self.f_history = [float(f) for f in f_history]  
+        self.x_avg_history = [np.copy(x) for x in x_avg_history]
+        self.diff_avg_history = [float(d) for d in diff_avg_history]
 
 
 
