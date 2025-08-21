@@ -439,8 +439,8 @@ def scikit_tt_traj(sim_params_class: SimulationParameters):
         initial_state = (1 / initial_state.norm()) * initial_state
 
         
-        #for j in range(n_obs):
-        #    exp_vals[j,0] += initial_state.transpose(conjugate=True)@obs_list[j]@initial_state
+        for j in range(n_obs):
+           exp_vals[j,0] += initial_state.transpose(conjugate=True)@obs_list[j]@initial_state
         
         A_kn_numpy[:,:,:,0] += evaluate_Ank(A_nk, initial_state)
         
@@ -449,8 +449,8 @@ def scikit_tt_traj(sim_params_class: SimulationParameters):
         for i in range(timesteps):
             initial_state = ode.tjm(hamiltonian, jump_operator_list, jump_parameter_list, initial_state, dt, 1, solver=scikit_tt_solver)[-1]
 
-        #    for j in range(n_obs):                
-        #        exp_vals[j,i+1] += initial_state.transpose(conjugate=True)@obs_list[j]@initial_state
+            for j in range(n_obs):                
+                exp_vals[j,i+1] += initial_state.transpose(conjugate=True)@obs_list[j]@initial_state
 
             A_kn_numpy[:,:,:,i+1] += evaluate_Ank(A_nk, initial_state)
             
