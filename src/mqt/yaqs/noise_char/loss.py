@@ -12,7 +12,7 @@ from __future__ import annotations
 import copy
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 import numpy as np
 
@@ -54,6 +54,7 @@ class LossClass:
         num_traj: Callable[[int], int] = lineal_function_1000,
         print_to_file: bool = False,
         return_numeric_gradients: bool = False,
+        loss_scale: bool = False,
         epsilon: float = 1e-3,
     ) -> None:
         """Initializes the optimization class for noise characterization.
@@ -66,6 +67,7 @@ class LossClass:
                                                     evaluation count. Default lineal_function_1000.
             print_to_file (bool, optional): If True, enables printing output to a file. Default False.
             return_numeric_gradients (bool, optional): If True, compute gradients numerically. Default False.
+            loss_scale (bool, optional): If True, compute loss scaled by 1/(n_t*n_obs). Default False.
             epsilon (float, optional): Step size for numerical gradients. Default 1e-3.
 
         Attributes:
@@ -124,6 +126,13 @@ class LossClass:
         self.n_conv = 20
 
         self.avg_tol = 1e-6
+
+        self.n_obs, self.n_t = np.shape(self.ref_traj_array)
+
+        if loss_scale:
+            self.loss_scale_factor = 1/(self.n_obs*self.n_t)
+        else:
+            self.loss_scale_factor = 1
 
         self.num_traj = num_traj
 
@@ -316,7 +325,7 @@ class LossClass:
             - Subsequent columns are labeled as `x0`, `y0`, `z0`, ..., up to the number of observed
             sites and system size.
         Attributes used:
-            exp_vals_traj (np.ndarray): Array of expectation values with shape (n_obs_site, sites, n_t).
+            exp_vals_traj (np.ndarray): Array of expectation values with shape (n_obs + 1, n_t).
             t (np.ndarray): Array of time points.
             work_dir (str): Directory where the output file will be saved.
             n_eval (int): Evaluation index used in the output filename.
@@ -386,7 +395,7 @@ class LossClass:
 
         diff = self.obs_array - self.ref_traj_array
 
-        loss: float = np.sum(diff**2)
+        loss: float = np.sum(diff**2)*self.loss_scale_factor
 
         sim_time = end_time - start_time  # Simulation time
 
@@ -403,7 +412,7 @@ class LossClass:
                 obs_array_plus = copy.deepcopy(self.propagator.obs_array)
 
                 diff_plus = obs_array_plus - self.ref_traj_array
-                loss_plus = np.sum(diff_plus**2)
+                loss_plus = np.sum(diff_plus**2)*self.loss_scale_factor
 
                 grad[i] = (loss_plus - loss) / self.epsilon
 
