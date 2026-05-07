@@ -576,6 +576,109 @@ def test_mpo_mul_mpo() -> None:
     np.testing.assert_allclose((H * identity_mpo).to_matrix(), (H @ identity_mpo).to_matrix(), atol=1e-12)
 
 
+def test_mpo_add_random_matrices() -> None:
+    """MPO addition matches dense matrix addition for arbitrary random matrices."""
+    rng = np.random.default_rng(42)
+    d, L = 2, 3
+    n = d**L
+    a_dense = rng.random((n, n)) + 1j * rng.random((n, n))
+    b_dense = rng.random((n, n)) + 1j * rng.random((n, n))
+    mpo_a = MPO.from_matrix(a_dense, d)
+    mpo_b = MPO.from_matrix(b_dense, d)
+    np.testing.assert_allclose((mpo_a + mpo_b).to_matrix(), a_dense + b_dense, atol=1e-10)
+
+
+def test_mpo_mul_random_matrices() -> None:
+    """MPO operator product matches dense matrix multiplication for random matrices."""
+    rng = np.random.default_rng(0)
+    d, L = 2, 3
+    n = d**L
+    a_dense = rng.random((n, n)) + 1j * rng.random((n, n))
+    b_dense = rng.random((n, n)) + 1j * rng.random((n, n))
+    mpo_a = MPO.from_matrix(a_dense, d)
+    mpo_b = MPO.from_matrix(b_dense, d)
+    np.testing.assert_allclose((mpo_a @ mpo_b).to_matrix(), a_dense @ b_dense, atol=1e-10)
+
+
+def test_mpo_mul_non_commutative() -> None:
+    """MPO product is non-commutative: A @ B != B @ A for generic matrices."""
+    rng = np.random.default_rng(7)
+    d, L = 2, 3
+    n = d**L
+    a_dense = rng.random((n, n)) + 1j * rng.random((n, n))
+    b_dense = rng.random((n, n)) + 1j * rng.random((n, n))
+    mpo_a = MPO.from_matrix(a_dense, d)
+    mpo_b = MPO.from_matrix(b_dense, d)
+    ab = (mpo_a @ mpo_b).to_matrix()
+    ba = (mpo_b @ mpo_a).to_matrix()
+    assert not np.allclose(ab, ba), "Generic matrices should not commute"
+    np.testing.assert_allclose(ab, a_dense @ b_dense, atol=1e-10)
+    np.testing.assert_allclose(ba, b_dense @ a_dense, atol=1e-10)
+
+
+def test_mpo_add_commutativity() -> None:
+    """MPO addition is commutative: A + B == B + A."""
+    rng = np.random.default_rng(1)
+    d, L = 2, 3
+    n = d**L
+    a_dense = rng.random((n, n)) + 1j * rng.random((n, n))
+    b_dense = rng.random((n, n)) + 1j * rng.random((n, n))
+    mpo_a = MPO.from_matrix(a_dense, d)
+    mpo_b = MPO.from_matrix(b_dense, d)
+    np.testing.assert_allclose((mpo_a + mpo_b).to_matrix(), (mpo_b + mpo_a).to_matrix(), atol=1e-10)
+
+
+def test_mpo_mul_associativity() -> None:
+    """MPO product is associative: (A @ B) @ C == A @ (B @ C)."""
+    rng = np.random.default_rng(2)
+    d, L = 2, 3
+    n = d**L
+    a_dense = rng.random((n, n)) + 1j * rng.random((n, n))
+    b_dense = rng.random((n, n)) + 1j * rng.random((n, n))
+    c_dense = rng.random((n, n)) + 1j * rng.random((n, n))
+    mpo_a = MPO.from_matrix(a_dense, d)
+    mpo_b = MPO.from_matrix(b_dense, d)
+    mpo_c = MPO.from_matrix(c_dense, d)
+    lhs = ((mpo_a @ mpo_b) @ mpo_c).to_matrix()
+    rhs = (mpo_a @ (mpo_b @ mpo_c)).to_matrix()
+    expected = a_dense @ b_dense @ c_dense
+    np.testing.assert_allclose(lhs, expected, atol=1e-8)
+    np.testing.assert_allclose(rhs, expected, atol=1e-8)
+
+
+def test_mpo_distributivity() -> None:
+    """MPO product distributes over addition: (A + B) @ C == A @ C + B @ C."""
+    rng = np.random.default_rng(3)
+    d, L = 2, 3
+    n = d**L
+    a_dense = rng.random((n, n)) + 1j * rng.random((n, n))
+    b_dense = rng.random((n, n)) + 1j * rng.random((n, n))
+    c_dense = rng.random((n, n)) + 1j * rng.random((n, n))
+    mpo_a = MPO.from_matrix(a_dense, d)
+    mpo_b = MPO.from_matrix(b_dense, d)
+    mpo_c = MPO.from_matrix(c_dense, d)
+    lhs = ((mpo_a + mpo_b) @ mpo_c).to_matrix()
+    rhs = (mpo_a @ mpo_c + mpo_b @ mpo_c).to_matrix()
+    expected = (a_dense + b_dense) @ c_dense
+    np.testing.assert_allclose(lhs, expected, atol=1e-8)
+    np.testing.assert_allclose(rhs, expected, atol=1e-8)
+
+
+def test_mpo_scalar_mul_then_matmul() -> None:
+    """Scalar scaling commutes with operator product: (c * A) @ B == c * (A @ B)."""
+    rng = np.random.default_rng(4)
+    d, L = 2, 3
+    n = d**L
+    c = 2.5 + 0.5j
+    a_dense = rng.random((n, n)) + 1j * rng.random((n, n))
+    b_dense = rng.random((n, n)) + 1j * rng.random((n, n))
+    mpo_a = MPO.from_matrix(a_dense, d)
+    mpo_b = MPO.from_matrix(b_dense, d)
+    lhs = (c * mpo_a @ mpo_b).to_matrix()
+    rhs = c * (mpo_a @ mpo_b).to_matrix()
+    np.testing.assert_allclose(lhs, rhs, atol=1e-10)
+
+
 def test_mpo_add_incompatible_length_raises() -> None:
     """Adding MPOs with different lengths raises ValueError."""
     H3 = MPO.ising(3, 1.0, 0.5)
