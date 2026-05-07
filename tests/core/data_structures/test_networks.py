@@ -518,6 +518,81 @@ def test_check_if_identity() -> None:
 
 
 ##############################################################################
+# Tests for MPO arithmetic operators
+##############################################################################
+
+
+def test_mpo_add() -> None:
+    """MPO.__add__ produces the correct dense sum of two Hamiltonians."""
+    L, J, g = 4, 1.0, 0.5
+    H1 = MPO.ising(L, J, g)
+    H2 = MPO.ising(L, 0.0, g)  # field-only term
+    result = H1 + H2
+    np.testing.assert_allclose(result.to_matrix(), H1.to_matrix() + H2.to_matrix(), atol=1e-12)
+
+
+def test_mpo_add_with_identity() -> None:
+    """MPO.__add__ with a scaled identity gives the expected dense matrix."""
+    L, J, g = 3, 1.0, 0.5
+    H = MPO.ising(L, J, g)
+    identity_mpo = MPO()
+    identity_mpo.identity(L)
+    result = H + identity_mpo
+    np.testing.assert_allclose(result.to_matrix(), H.to_matrix() + identity_mpo.to_matrix(), atol=1e-12)
+
+
+def test_mpo_mul_scalar() -> None:
+    """MPO.__mul__ with a scalar scales the operator correctly."""
+    L, J, g = 4, 1.0, 0.5
+    H = MPO.ising(L, J, g)
+    result = H * 2.0
+    np.testing.assert_allclose(result.to_matrix(), 2.0 * H.to_matrix(), atol=1e-12)
+
+
+def test_mpo_rmul_scalar() -> None:
+    """MPO.__rmul__ (left scalar) scales the operator correctly."""
+    L, J, g = 4, 1.0, 0.5
+    H = MPO.ising(L, J, g)
+    result = 3.0 * H
+    np.testing.assert_allclose(result.to_matrix(), 3.0 * H.to_matrix(), atol=1e-12)
+
+
+def test_mpo_matmul_identity() -> None:
+    """Identity MPO is the neutral element for operator product."""
+    L, J, g = 3, 1.0, 0.5
+    H = MPO.ising(L, J, g)
+    identity_mpo = MPO()
+    identity_mpo.identity(L)
+    np.testing.assert_allclose((identity_mpo @ H).to_matrix(), H.to_matrix(), atol=1e-12)
+    np.testing.assert_allclose((H @ identity_mpo).to_matrix(), H.to_matrix(), atol=1e-12)
+
+
+def test_mpo_mul_mpo() -> None:
+    """MPO.__mul__ with another MPO gives the same result as __matmul__."""
+    L, J, g = 3, 1.0, 0.5
+    H = MPO.ising(L, J, g)
+    identity_mpo = MPO()
+    identity_mpo.identity(L)
+    np.testing.assert_allclose((H * identity_mpo).to_matrix(), (H @ identity_mpo).to_matrix(), atol=1e-12)
+
+
+def test_mpo_add_incompatible_length_raises() -> None:
+    """Adding MPOs with different lengths raises ValueError."""
+    H3 = MPO.ising(3, 1.0, 0.5)
+    H4 = MPO.ising(4, 1.0, 0.5)
+    with pytest.raises(ValueError, match="incompatible"):
+        _ = H3 + H4
+
+
+def test_mpo_mul_incompatible_length_raises() -> None:
+    """Multiplying MPOs with different lengths raises ValueError."""
+    H3 = MPO.ising(3, 1.0, 0.5)
+    H4 = MPO.ising(4, 1.0, 0.5)
+    with pytest.raises(ValueError, match="incompatible"):
+        _ = H3 @ H4
+
+
+##############################################################################
 # Tests for the MPS class
 ##############################################################################
 

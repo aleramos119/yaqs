@@ -1092,6 +1092,8 @@ class MPO:
     ----------
     - ``compress(...)``: SVD-based bond compression sweeps.
     - ``rotate(...)``: swap physical legs (optionally conjugating).
+    - ``+``: direct-sum of two MPOs (bond dims are additive; compress afterward).
+    - ``*`` / ``@``: operator product of two MPOs, or scalar scaling.
 
     Conversion / checks
     -------------------
@@ -1825,6 +1827,154 @@ class MPO:
                 self.tensors[i] = np.transpose(np.conj(tensor), (1, 0, 2, 3))
             else:
                 self.tensors[i] = np.transpose(tensor, (1, 0, 2, 3))
+
+    def __add__(self, other: MPO) -> MPO:
+        """Return the sum of two MPOs as a new MPO.
+
+        Implements the direct-sum (block-diagonal) construction: the bond spaces of
+        ``self`` and ``other`` are concatenated at each site so that the resulting
+        MPO represents the operator ``self + other`` exactly. Bond dimensions are
+        additive, so callers should invoke ``.compress()`` on the result when a
+        compact representation is needed.
+
+        Args:
+            other: MPO to add. Must have the same ``length`` and
+                ``physical_dimension`` as ``self``.
+
+        Returns:
+            MPO: New MPO representing ``self + other``.
+
+        Raises:
+            TypeError: If ``other`` is not an MPO.
+            ValueError: If the two MPOs differ in length or physical dimension.
+        """
+        if not isinstance(other, MPO):
+            msg = "Can only add an MPO to an MPO."
+            raise TypeError(msg)
+        if self.length != other.length or self.physical_dimension != other.physical_dimension:
+            msg = (
+                f"MPO shapes are incompatible: "
+                f"({self.length}, d={self.physical_dimension}) vs "
+                f"({other.length}, d={other.physical_dimension})"
+            )
+            raise ValueError(msg)
+
+        d = self.physical_dimension
+        result_tensors: list[NDArray[np.complex128]] = []
+
+        for i in range(self.length):
+            a = self.tensors[i]
+            b = other.tensors[i]
+            chi_la, chi_ra = a.shape[2], a.shape[3]
+            chi_lb, chi_rb = b.shape[2], b.shape[3]
+
+            if i == 0:
+                # Both left bonds are 1; concatenate along right bond only.
+                t = np.zeros((d, d, 1, chi_ra + chi_rb), dtype=complex)
+                t[:, :, 0, :chi_ra] = a[:, :, 0, :]
+                t[:, :, 0, chi_ra:] = b[:, :, 0, :]
+            elif i == self.length - 1:
+                # Both right bonds are 1; concatenate along left bond only.
+                t = np.zeros((d, d, chi_la + chi_lb, 1), dtype=complex)
+                t[:, :, :chi_la, 0] = a[:, :, :, 0]
+                t[:, :, chi_la:, 0] = b[:, :, :, 0]
+            else:
+                # Interior: block-diagonal in bond space.
+                t = np.zeros((d, d, chi_la + chi_lb, chi_ra + chi_rb), dtype=complex)
+                t[:, :, :chi_la, :chi_ra] = a
+                t[:, :, chi_la:, chi_ra:] = b
+
+            result_tensors.append(t)
+
+        result = MPO()
+        result.tensors = result_tensors
+        result.length = self.length
+        result.physical_dimension = d
+        return result
+
+    def __mul__(self, other: MPO | complex) -> MPO:
+        """Return the product of this MPO with another MPO or a scalar.
+
+        When ``other`` is a scalar, returns a new MPO whose operator is scaled
+        by that value (only the first tensor is scaled, preserving the MPS gauge).
+
+        When ``other`` is an MPO, returns the operator product ``self @ other``
+        (i.e. ``self`` is applied *after* ``other``). At each site the physical
+        index of ``self`` is contracted with the physical index of ``other``, and
+        the bond spaces are combined via a Kronecker product, giving bond dimensions
+        ``chi_L_self * chi_L_other`` and ``chi_R_self * chi_R_other``.
+
+        Args:
+            other: Scalar (``float`` or ``complex``) or MPO to multiply with.
+
+        Returns:
+            MPO: New MPO representing the product.
+
+        Raises:
+            TypeError: If ``other`` is neither a scalar nor an MPO.
+            ValueError: If ``other`` is an MPO with incompatible length or
+                physical dimension.
+        """
+        if isinstance(other, (int, float, complex, np.number)):
+            result = copy.deepcopy(self)
+            result.tensors[0] *= complex(other)
+            return result
+
+        if not isinstance(other, MPO):
+            msg = f"Unsupported operand type for MPO multiplication: {type(other)}"
+            raise TypeError(msg)
+
+        if self.length != other.length or self.physical_dimension != other.physical_dimension:
+            msg = (
+                f"MPO shapes are incompatible: "
+                f"({self.length}, d={self.physical_dimension}) vs "
+                f"({other.length}, d={other.physical_dimension})"
+            )
+            raise ValueError(msg)
+
+        d = self.physical_dimension
+        result_tensors: list[NDArray[np.complex128]] = []
+
+        for i in range(self.length):
+            a = self.tensors[i]  # (phys_out, phys_mid, chi_la, chi_ra)
+            b = other.tensors[i]  # (phys_mid, phys_in,  chi_lb, chi_rb)
+            chi_la, chi_ra = a.shape[2], a.shape[3]
+            chi_lb, chi_rb = b.shape[2], b.shape[3]
+            # Contract shared physical index; Kronecker-product the bond spaces.
+            t = oe.contract("amij,mbkl->abikjl", a, b)
+            t = t.reshape(d, d, chi_la * chi_lb, chi_ra * chi_rb)
+            result_tensors.append(t)
+
+        result = MPO()
+        result.tensors = result_tensors
+        result.length = self.length
+        result.physical_dimension = d
+        return result
+
+    def __rmul__(self, other: complex) -> MPO:
+        """Return a scalar-scaled copy of this MPO (left multiplication).
+
+        Args:
+            other: Scalar to multiply with.
+
+        Returns:
+            MPO: New MPO scaled by ``other``.
+        """
+        return self.__mul__(other)
+
+    def __matmul__(self, other: MPO) -> MPO:
+        """Return the operator product of this MPO with another MPO.
+
+        Equivalent to ``self * other`` when ``other`` is an MPO: ``self`` is
+        applied after ``other`` (i.e. the matrix product ``self @ other``).
+
+        Args:
+            other: MPO to multiply with.
+
+        Returns:
+            MPO: New MPO representing the operator product.
+        """
+        return self.__mul__(other)
 
     def to_mps(self) -> MPS:
         """MPO to MPS conversion.
