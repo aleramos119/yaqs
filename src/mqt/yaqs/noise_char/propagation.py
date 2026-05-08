@@ -238,6 +238,161 @@ class Propagator:
 
         self.set_observables = True
 
+    @staticmethod
+    def _single_site_mpo(op: np.ndarray, site: int, length: int, d: int) -> MPO:
+        """Build an MPO with ``op`` at ``site`` and identity on all other sites.
+
+        Args:
+            op: Local operator matrix of shape ``(d, d)``.
+            site: Site index where ``op`` is placed.
+            length: Total chain length.
+            d: Physical (local Hilbert-space) dimension.
+
+        Returns:
+            MPO with bond dimension 1 throughout.
+        """
+        from mqt.yaqs.core.data_structures.networks import MPO
+
+        identity = np.eye(d, dtype=complex).reshape(d, d, 1, 1)
+        tensors = [identity.copy() if i != site else op.astype(complex).reshape(d, d, 1, 1) for i in range(length)]
+        result = MPO()
+        result.tensors = tensors
+        result.length = length
+        result.physical_dimension = d
+        return result
+
+    @staticmethod
+    def _adjacent_two_site_mpo(op: np.ndarray, site_a: int, site_b: int, length: int, d: int) -> MPO:
+        """Build an MPO for a two-site operator on adjacent sites ``site_a`` and ``site_b = site_a + 1``.
+
+        Factorizes ``op`` (shape ``(d^2, d^2)``) via SVD into a pair of tensors and
+        embeds them in the chain with identity on all other sites.
+
+        Args:
+            op: Two-site operator matrix of shape ``(d^2, d^2)`` with row index
+                ``(out_a, out_b)`` and column index ``(in_a, in_b)`` in row-major order.
+            site_a: Left site index.
+            site_b: Right site index; must equal ``site_a + 1``.
+            length: Total chain length.
+            d: Physical dimension per site.
+
+        Returns:
+            MPO representing ``op`` embedded in the full chain.
+        """
+        from mqt.yaqs.core.data_structures.networks import MPO
+
+        # Reshape: op[out_a*d+out_b, in_a*d+in_b] → op4[out_a, out_b, in_a, in_b]
+        # Transpose → m[out_a*d+in_a, out_b*d+in_b], then SVD.
+        m = op.astype(complex).reshape(d, d, d, d).transpose(0, 2, 1, 3).reshape(d * d, d * d)
+        u, s, vh = np.linalg.svd(m, full_matrices=False)
+        chi = len(s)
+        sqrt_s = np.sqrt(s)
+
+        a_mat = (u * sqrt_s).reshape(d, d, 1, chi)
+        b_mat = (sqrt_s[:, np.newaxis] * vh).reshape(chi, d, d).transpose(1, 2, 0)[:, :, :, np.newaxis]
+
+        identity = np.eye(d, dtype=complex).reshape(d, d, 1, 1)
+        tensors = []
+        for i in range(length):
+            if i == site_a:
+                tensors.append(a_mat)
+            elif i == site_b:
+                tensors.append(b_mat)
+            else:
+                tensors.append(identity.copy())
+        result = MPO()
+        result.tensors = tensors
+        result.length = length
+        result.physical_dimension = d
+        return result
+
+    @staticmethod
+    def _product_two_site_mpo(
+        op1: np.ndarray, site1: int, op2: np.ndarray, site2: int, length: int, d: int
+    ) -> MPO:
+        """Build an MPO for the product operator ``op1 ⊗ op2`` at non-adjacent sites.
+
+        Both ``op1`` and ``op2`` are single-site operators; identity is placed on all
+        other sites. The resulting MPO has bond dimension 1 throughout.
+
+        Args:
+            op1: Single-site operator of shape ``(d, d)`` placed at ``site1``.
+            site1: Site index for ``op1``.
+            op2: Single-site operator of shape ``(d, d)`` placed at ``site2``.
+            site2: Site index for ``op2``; must differ from ``site1``.
+            length: Total chain length.
+            d: Physical dimension per site.
+
+        Returns:
+            MPO representing ``op1 ⊗ I ⊗ ... ⊗ I ⊗ op2`` embedded in the full chain.
+        """
+        from mqt.yaqs.core.data_structures.networks import MPO
+
+        identity = np.eye(d, dtype=complex).reshape(d, d, 1, 1)
+        tensors = []
+        for i in range(length):
+            if i == site1:
+                tensors.append(op1.astype(complex).reshape(d, d, 1, 1))
+            elif i == site2:
+                tensors.append(op2.astype(complex).reshape(d, d, 1, 1))
+            else:
+                tensors.append(identity.copy())
+        result = MPO()
+        result.tensors = tensors
+        result.length = length
+        result.physical_dimension = d
+        return result
+
+    def effective_hamiltonian(self) -> MPO:
+        r"""Return the effective non-Hermitian Hamiltonian as an MPO.
+
+        Computes
+
+        .. math::
+            H_{\mathrm{eff}} = -i H - \frac{1}{2} \sum_m \gamma_m L_m^\dagger L_m
+
+        where :math:`H` is the system Hamiltonian and :math:`L_m` are the jump
+        operators from the expanded noise model with rates :math:`\gamma_m`.
+
+        Returns:
+            MPO: :math:`H_{\mathrm{eff}}` with the same length and physical
+            dimension as ``self.hamiltonian``.
+
+        Notes:
+            All process strengths must be concrete floats. If the noise model
+            uses distribution-valued strengths, resolve them with
+            ``CompactNoiseModel.sample()`` before constructing this
+            ``Propagator``.
+        """
+        d = self.hamiltonian.physical_dimension
+        n = self.sites
+
+        h_eff: MPO = (-1j) * self.hamiltonian
+
+        for proc in self.expanded_noise_model.processes:
+            gamma = float(proc["strength"])
+            sites = proc["sites"]
+
+            if len(sites) == 1:
+                op = np.asarray(proc["matrix"], dtype=complex)
+                ldagl = op.conj().T @ op
+                term_mpo = self._single_site_mpo(ldagl, sites[0], n, d)
+            elif "matrix" in proc:
+                # Adjacent two-site operator
+                op = np.asarray(proc["matrix"], dtype=complex)
+                ldagl = op.conj().T @ op
+                term_mpo = self._adjacent_two_site_mpo(ldagl, sites[0], sites[1], n, d)
+            else:
+                # Long-range Crosstalk: L = L1 ⊗ L2, so L†L = (L1†L1) ⊗ (L2†L2)
+                mat1, mat2 = (np.asarray(f, dtype=complex) for f in proc["factors"])
+                ldagl1 = mat1.conj().T @ mat1
+                ldagl2 = mat2.conj().T @ mat2
+                term_mpo = self._product_two_site_mpo(ldagl1, sites[0], ldagl2, sites[1], n, d)
+
+            h_eff = h_eff + ((-0.5 * gamma) * term_mpo)
+
+        return h_eff
+
     def write_traj(self, output_file: Path) -> None:
         """Saves the optimized trajectory of expectation values to a text file.
 
