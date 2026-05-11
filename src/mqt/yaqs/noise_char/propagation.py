@@ -721,6 +721,49 @@ class Propagator:
 
         return dF
 
+    def kraus_operators_derivative_adjoint(
+        self,
+        dt: float,
+        n: int,
+        *,
+        kraus: list[MPO] | None = None,
+        compress: bool = False,
+        tol: float = 1e-12,
+        max_bond_dim: int | None = None,
+    ) -> list[list[MPO]]:
+        r"""Return the adjoints of the Kraus operator derivatives.
+
+        Computes ``dF_adj[j][i]`` =
+        :math:`(\partial F_i / \partial\gamma_j)^\dagger` by calling
+        :meth:`kraus_operators_derivative` and applying
+        :meth:`~mqt.yaqs.core.data_structures.networks.MPO.adjoint` to every
+        element.
+
+        Args:
+            dt: Time step :math:`dt`.
+            n: Neumann expansion order.
+            kraus: Pre-computed list ``[F_0, F_1, ..., F_M]`` passed through
+                to :meth:`kraus_operators_derivative`.
+            compress: If ``True``, compress every MPO using SVD sweeps.
+            tol: SVD truncation threshold used when ``compress=True``.
+            max_bond_dim: Hard cap on the bond dimension when
+                ``compress=True``; ``None`` means no cap.
+
+        Returns:
+            list[list[MPO]]: ``dF_adj[j][i]`` =
+            :math:`(\partial F_i/\partial\gamma_j)^\dagger`.
+
+        Raises:
+            ValueError: If ``n`` is negative (propagated from
+                :meth:`neumann_expansion`).
+        """
+        return [
+            [op.adjoint() for op in row]
+            for row in self.kraus_operators_derivative(
+                dt, n, kraus=kraus, compress=compress, tol=tol, max_bond_dim=max_bond_dim
+            )
+        ]
+
     def write_traj(self, output_file: Path) -> None:
         """Saves the optimized trajectory of expectation values to a text file.
 

@@ -507,3 +507,48 @@ def test_kraus_derivative_precomputed_inputs() -> None:
                 dF_auto[j][i].to_sparse_matrix().toarray(),
                 atol=1e-12,
             )
+
+
+def test_kraus_derivative_adjoint_shape() -> None:
+    """kraus_operators_derivative_adjoint returns the same shape as kraus_operators_derivative."""
+    prop = _make_propagator_2site()
+    dF_adj = prop.kraus_operators_derivative_adjoint(dt=0.1, n=1)
+    assert len(dF_adj) == prop.n_jump
+    for row in dF_adj:
+        assert len(row) == 1 + prop.n_jump
+        for op in row:
+            assert isinstance(op, MPO)
+            assert op.length == prop.sites
+
+
+def test_kraus_derivative_adjoint_matches_conj_transpose() -> None:
+    """Every dF_adj[j][i] equals dF[j][i].conj().T in dense form."""
+    prop = _make_propagator_2site()
+    dt, n = 0.1, 1
+
+    dF = prop.kraus_operators_derivative(dt=dt, n=n)
+    dF_adj = prop.kraus_operators_derivative_adjoint(dt=dt, n=n)
+
+    for j in range(prop.n_jump):
+        for i in range(1 + prop.n_jump):
+            d_dense = dF[j][i].to_sparse_matrix().toarray()
+            d_adj_dense = dF_adj[j][i].to_sparse_matrix().toarray()
+            np.testing.assert_allclose(d_adj_dense, d_dense.conj().T, atol=1e-12)
+
+
+def test_kraus_derivative_adjoint_precomputed_kraus() -> None:
+    """Passing pre-computed kraus to derivative_adjoint gives identical results."""
+    prop = _make_propagator_2site()
+    dt, n = 0.1, 1
+
+    kraus = prop.kraus_operators(dt=dt, n=n)
+    dF_adj_auto = prop.kraus_operators_derivative_adjoint(dt=dt, n=n)
+    dF_adj_pre = prop.kraus_operators_derivative_adjoint(dt=dt, n=n, kraus=kraus)
+
+    for j in range(prop.n_jump):
+        for i in range(1 + prop.n_jump):
+            np.testing.assert_allclose(
+                dF_adj_pre[j][i].to_sparse_matrix().toarray(),
+                dF_adj_auto[j][i].to_sparse_matrix().toarray(),
+                atol=1e-12,
+            )
