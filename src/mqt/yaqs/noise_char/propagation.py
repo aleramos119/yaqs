@@ -25,6 +25,23 @@ if TYPE_CHECKING:
     from mqt.yaqs.core.data_structures.noise_model import CompactNoiseModel, NoiseModel
 
 
+class _GradientObservable:
+    """MPO-based gradient observable; not passed to the stochastic simulator.
+
+    Stores ``M = K'_{gamma_l}(K^i(O_n))`` and the pre-computed expectation
+    value ``<psi_0|M|psi_0>``.
+    """
+
+    def __init__(self, mpo: MPO, n_obs_idx: int, l_jump_idx: int, i_lag: int, n_sites: int, result: float) -> None:
+        """Initialise the gradient observable wrapper."""
+        self.mpo = mpo
+        self.n_obs_idx = n_obs_idx
+        self.l_jump_idx = l_jump_idx
+        self.i_lag = i_lag
+        self.sites: list[int] = list(range(n_sites))
+        self.results: float = result
+
+
 def noise_model_to_operator_list(noise_model: NoiseModel) -> list[Observable]:
     """Converts a noise model to a list of observables.
 
@@ -885,6 +902,127 @@ class Propagator:
             results.append(result)  # type: ignore[arg-type]
         return results
 
+    @staticmethod
+    def _mps_mpo_expectation(mpo: MPO, mps: MPS) -> float:
+        r"""Compute :math:`\langle\psi|O|\psi\rangle` via MPS-MPO-MPS boundary contraction.
+
+        Args:
+            mpo: MPO :math:`O`; tensors of shape ``(d_out, d_in, w_l, w_r)``.
+            mps: MPS :math:`|\psi\rangle`; tensors of shape ``(d, chi_l, chi_r)``.
+
+        Returns:
+            float: Real part of :math:`\langle\psi|O|\psi\rangle`.
+        """
+        # boundary[chi_bra, w, chi_ket] — starts at (1,1,1)
+        boundary = np.ones((1, 1, 1), dtype=complex)
+        for mps_t, mpo_t in zip(mps.tensors, mpo.tensors):
+            # a=chi_bra_l, e=w_l, b=chi_ket_l  (from boundary)
+            # d=phys_bra (contracts with mpo d_out), c=chi_bra_r
+            # f=phys_ket (contracts with mpo d_in), g=w_r, h=chi_ket_r
+            boundary = np.einsum("aeb, dac, dfeg, fbh -> cgh", boundary, mps_t.conj(), mpo_t, mps_t)
+        return float(np.real(boundary.squeeze()))
+
+    def append_gradient_observables(
+        self,
+        dt: float,
+        n_neumann: int,
+        *,
+        compress: bool = False,
+        tol: float = 1e-12,
+        max_bond_dim: int | None = None,
+    ) -> None:
+        r"""Build gradient observables and append them to ``self.obs_list``.
+
+        For every original observable :math:`O_n`, jump rate :math:`\gamma_l`,
+        and time lag :math:`i \in \{0, \ldots, n_t - 2\}`, builds the MPO
+
+        .. math::
+
+            M_{n,l,i} = \mathcal{K}'_{\gamma_l}\!\left(\mathcal{K}^i(O_n)\right)
+
+        where :math:`\mathcal{K}^i` denotes :meth:`backward_kraus_map` applied
+        :math:`i` times and :math:`\mathcal{K}'_{\gamma_l}` denotes
+        :meth:`backward_kraus_map_derivative` with respect to :math:`\gamma_l`.
+        The expectation value :math:`\langle\psi_0|M_{n,l,i}|\psi_0\rangle` is
+        computed analytically from the initial state and stored in
+        :attr:`gradient_obs_array` (shape ``(n_obs, n_jump, n_t - 1)``).
+
+        Each result is also appended to ``self.obs_list`` as a
+        :class:`_GradientObservable`, which :meth:`run` automatically skips
+        when passing observables to the stochastic simulator.
+
+        Args:
+            dt: Time step :math:`dt`.
+            n_neumann: Neumann expansion order.
+            compress: If ``True``, compress intermediate MPOs via SVD sweeps.
+            tol: SVD truncation threshold used when ``compress=True``.
+            max_bond_dim: Hard cap on bond dimension when ``compress=True``.
+
+        Raises:
+            ValueError: If :meth:`set_observable_list` has not been called.
+            NotImplementedError: If an observable acts on non-adjacent sites
+                without a ``factors`` attribute.
+        """
+        if not self.set_observables:
+            msg = "Call set_observable_list before append_gradient_observables."
+            raise ValueError(msg)
+
+        d = self.hamiltonian.physical_dimension
+        n_lags = self.n_t - 1  # i = 0 .. n_t - 2
+
+        kraus = self.kraus_operators(dt, n_neumann, compress=compress, tol=tol, max_bond_dim=max_bond_dim)
+        dF = self.kraus_operators_derivative(
+            dt, n_neumann, kraus=kraus, compress=compress, tol=tol, max_bond_dim=max_bond_dim
+        )
+
+        self.gradient_obs_array = np.zeros((self.n_obs, self.n_jump, n_lags))
+
+        for n_idx, obs in enumerate(self.obs_list):
+            if isinstance(obs, _GradientObservable):
+                continue
+
+            # Build the full-chain MPO for this observable.
+            sites = [obs.sites] if isinstance(obs.sites, int) else list(obs.sites)
+            if len(sites) == 1:
+                obs_mpo = self._single_site_mpo(obs.gate.matrix, sites[0], self.sites, d)
+            elif len(sites) == 2 and sites[1] == sites[0] + 1:
+                obs_mpo = self._adjacent_two_site_mpo(obs.gate.matrix, sites[0], sites[1], self.sites, d)
+            elif len(sites) == 2:
+                if hasattr(obs.gate, "factors"):
+                    obs_mpo = self._product_two_site_mpo(
+                        obs.gate.factors[0], sites[0], obs.gate.factors[1], sites[1], self.sites, d
+                    )
+                else:
+                    msg = f"Observable on non-adjacent sites {sites} has no 'factors' attribute."
+                    raise NotImplementedError(msg)
+            else:
+                msg = f"Observables on {len(sites)} sites are not supported."
+                raise NotImplementedError(msg)
+
+            q = obs_mpo  # K^0(O_n) = O_n
+            for i_lag in range(n_lags):
+                grad_mpos = self.backward_kraus_map_derivative(
+                    q, dt, n_neumann, kraus=kraus, dF=dF, compress=compress, tol=tol, max_bond_dim=max_bond_dim
+                )
+                for l_idx, gm in enumerate(grad_mpos):
+                    val = self._mps_mpo_expectation(gm, self.init_state)
+                    self.gradient_obs_array[n_idx, l_idx, i_lag] = val
+                    self.obs_list.append(
+                        _GradientObservable(
+                            mpo=gm,
+                            n_obs_idx=n_idx,
+                            l_jump_idx=l_idx,
+                            i_lag=i_lag,
+                            n_sites=self.sites,
+                            result=val,
+                        )
+                    )
+                # Advance to K^{i+1}(O_n) for the next lag.
+                if i_lag < n_lags - 1:
+                    q = self.backward_kraus_map(
+                        q, dt, n_neumann, kraus=kraus, compress=compress, tol=tol, max_bond_dim=max_bond_dim
+                    )
+
     def write_traj(self, output_file: Path) -> None:
         """Saves the optimized trajectory of expectation values to a text file.
 
@@ -967,8 +1105,12 @@ class Propagator:
                     msg = "Noise model processes or sites do not match the initialized noise model."
                     raise ValueError(msg)
 
+        # _GradientObservable entries are computed analytically; exclude them
+        # from the stochastic simulator.
+        simulator_obs = [obs for obs in self.obs_list if not isinstance(obs, _GradientObservable)]
+
         sim_params = AnalogSimParams(
-            observables=self.obs_list,
+            observables=simulator_obs,
             elapsed_time=self.sim_params.elapsed_time,
             dt=self.sim_params.dt,
             num_traj=self.sim_params.num_traj,

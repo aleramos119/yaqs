@@ -718,3 +718,136 @@ def test_backward_kraus_map_derivative_precomputed_inputs() -> None:
             results_auto[l_idx].to_sparse_matrix().toarray(),
             atol=1e-12,
         )
+
+
+# ---------------------------------------------------------------------------
+# _mps_mpo_expectation / append_gradient_observables
+# ---------------------------------------------------------------------------
+
+
+def _make_propagator_2site_with_obs() -> propagation.Propagator:
+    """2-site propagator with set_observable_list called.
+
+    Uses elapsed_time=0.1, dt=0.1 → n_t=2, n_t-1=1 lag so that
+    append_gradient_observables builds only one set of gradient MPOs and
+    does not hit memory pressure from repeated backward_kraus_map calls.
+    """
+    sites = 2
+    dt = 0.1
+    h_0 = MPO.ising(sites, 1.0, 0.5)
+    init_state = MPS(sites, state="zeros")
+    ref_noise_model = CompactNoiseModel([
+        {"name": "lowering", "sites": list(range(sites)), "strength": 0.1},
+        {"name": "pauli_z", "sites": list(range(sites)), "strength": 0.15},
+    ])
+    obs_list = [Observable(X(), 0), Observable(Z(), 1)]
+    sim_params = AnalogSimParams(
+        observables=obs_list,
+        elapsed_time=dt,
+        dt=dt,
+        num_traj=1,
+        max_bond_dim=4,
+        threshold=1e-4,
+        order=1,
+    )
+    prop = propagation.Propagator(
+        sim_params=sim_params,
+        hamiltonian=h_0,
+        compact_noise_model=ref_noise_model,
+        init_state=init_state,
+    )
+    prop.set_observable_list(obs_list)
+    return prop
+
+
+def test_mps_mpo_expectation_identity() -> None:
+    """<psi|I|psi> == 1 for a normalised MPS."""
+    from mqt.yaqs.noise_char.propagation import Propagator
+
+    prop = _make_propagator_2site()
+    identity = MPO()
+    identity.identity(prop.sites, prop.hamiltonian.physical_dimension)
+    val = Propagator._mps_mpo_expectation(identity, prop.init_state)
+    np.testing.assert_allclose(val, 1.0, atol=1e-12)
+
+
+def test_mps_mpo_expectation_matches_dense() -> None:
+    """_mps_mpo_expectation matches <v|O|v> computed via dense matrix."""
+    from mqt.yaqs.noise_char.propagation import Propagator
+
+    prop = _make_propagator_2site()
+    obs_mpo = MPO.ising(prop.sites, 1.0, 0.5)
+    mps = prop.init_state
+
+    # Contract MPS tensors to a state vector.
+    v = mps.tensors[0][:, 0, :]  # (d, chi_0)
+    for t in mps.tensors[1:]:
+        v = np.einsum("...l, dlr -> ...dr", v, t)
+    v = v[..., 0].reshape(-1)
+
+    o_dense = obs_mpo.to_sparse_matrix().toarray()
+    expected = float(np.real(v.conj() @ o_dense @ v))
+    np.testing.assert_allclose(Propagator._mps_mpo_expectation(obs_mpo, mps), expected, atol=1e-12)
+
+
+def test_append_gradient_observables_shape() -> None:
+    """gradient_obs_array has shape (n_obs, n_jump, n_t - 1)."""
+    prop = _make_propagator_2site_with_obs()
+    prop.append_gradient_observables(dt=0.1, n_neumann=1)
+    assert prop.gradient_obs_array.shape == (prop.n_obs, prop.n_jump, prop.n_t - 1)
+
+
+def test_append_gradient_observables_appended_to_obs_list() -> None:
+    """obs_list grows by exactly n_obs * n_jump * (n_t - 1) gradient entries."""
+    from mqt.yaqs.noise_char.propagation import _GradientObservable
+
+    prop = _make_propagator_2site_with_obs()
+    n_original = len(prop.obs_list)
+    prop.append_gradient_observables(dt=0.1, n_neumann=1)
+
+    expected_new = prop.n_obs * prop.n_jump * (prop.n_t - 1)
+    gradient_entries = [obs for obs in prop.obs_list if isinstance(obs, _GradientObservable)]
+    assert len(gradient_entries) == expected_new
+    assert len(prop.obs_list) == n_original + expected_new
+
+
+def test_append_gradient_observables_matches_formula() -> None:
+    """gradient_obs_array[n,l,i] equals <psi0|K'_l(K^i(O_n))|psi0> computed explicitly."""
+    from mqt.yaqs.noise_char.propagation import Propagator
+
+    prop = _make_propagator_2site_with_obs()
+    dt, n = 0.1, 1
+
+    kraus = prop.kraus_operators(dt=dt, n=n)
+    dF = prop.kraus_operators_derivative(dt=dt, n=n, kraus=kraus)
+    d = prop.hamiltonian.physical_dimension
+
+    prop.append_gradient_observables(dt=dt, n_neumann=n)
+
+    for n_idx, obs in enumerate(prop.obs_list[: prop.n_obs]):
+        sites = [obs.sites] if isinstance(obs.sites, int) else list(obs.sites)
+        obs_mpo = Propagator._single_site_mpo(obs.gate.matrix, sites[0], prop.sites, d)
+
+        q = obs_mpo
+        for i_lag in range(prop.n_t - 1):
+            grad_mpos = prop.backward_kraus_map_derivative(q, dt, n, kraus=kraus, dF=dF)
+            for l_idx, gm in enumerate(grad_mpos):
+                expected = Propagator._mps_mpo_expectation(gm, prop.init_state)
+                np.testing.assert_allclose(
+                    prop.gradient_obs_array[n_idx, l_idx, i_lag], expected, atol=1e-12
+                )
+            if i_lag < prop.n_t - 2:
+                q = prop.backward_kraus_map(q, dt, n, kraus=kraus)
+
+
+def test_append_gradient_observables_results_on_wrappers() -> None:
+    """Each _GradientObservable.results matches gradient_obs_array[n,l,i]."""
+    from mqt.yaqs.noise_char.propagation import _GradientObservable
+
+    prop = _make_propagator_2site_with_obs()
+    prop.append_gradient_observables(dt=0.1, n_neumann=1)
+
+    for entry in prop.obs_list:
+        if isinstance(entry, _GradientObservable):
+            expected = prop.gradient_obs_array[entry.n_obs_idx, entry.l_jump_idx, entry.i_lag]
+            np.testing.assert_allclose(entry.results, expected, atol=1e-12)
