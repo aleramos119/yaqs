@@ -764,6 +764,56 @@ class Propagator:
             )
         ]
 
+    def backward_kraus_map(
+        self,
+        observable: MPO,
+        dt: float,
+        n: int,
+        *,
+        kraus: list[MPO] | None = None,
+        compress: bool = False,
+        tol: float = 1e-12,
+        max_bond_dim: int | None = None,
+    ) -> MPO:
+        r"""Apply the backward Kraus map to an observable.
+
+        Computes :math:`\mathcal{K}(O) = \sum_j F_j^\dagger\, O\, F_j` where
+        :math:`[F_0, F_1, \ldots, F_M]` are the Kraus operators returned by
+        :meth:`kraus_operators`.
+
+        Args:
+            observable: The MPO :math:`O` to which the map is applied.
+            dt: Time step :math:`dt`.
+            n: Neumann expansion order used to approximate
+               :math:`(I - H_{\mathrm{eff}}\,dt)^{-1}`.
+            kraus: Pre-computed Kraus operators ``[F_0, ..., F_M]``.  If
+               ``None``, they are computed via :meth:`kraus_operators`.
+            compress: If ``True``, compress intermediate and final MPOs using
+               SVD sweeps.
+            tol: SVD truncation threshold used when ``compress=True``.
+            max_bond_dim: Hard cap on the bond dimension when
+               ``compress=True``; ``None`` means no cap.
+
+        Returns:
+            MPO: :math:`\sum_j F_j^\dagger\, O\, F_j`.
+
+        Raises:
+            ValueError: If ``n`` is negative (propagated from
+               :meth:`neumann_expansion`).
+        """
+        if kraus is None:
+            kraus = self.kraus_operators(dt, n, compress=compress, tol=tol, max_bond_dim=max_bond_dim)
+
+        result: MPO | None = None
+        for f in kraus:
+            term = f.adjoint() @ observable @ f
+            if compress:
+                term.compress(tol=tol, max_bond_dim=max_bond_dim)
+            result = term if result is None else result + term
+            if compress:
+                result.compress(tol=tol, max_bond_dim=max_bond_dim)
+        return result  # type: ignore[return-value]
+
     def write_traj(self, output_file: Path) -> None:
         """Saves the optimized trajectory of expectation values to a text file.
 

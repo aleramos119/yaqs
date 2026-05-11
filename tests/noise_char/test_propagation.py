@@ -552,3 +552,82 @@ def test_kraus_derivative_adjoint_precomputed_kraus() -> None:
                 dF_adj_auto[j][i].to_sparse_matrix().toarray(),
                 atol=1e-12,
             )
+
+
+# ---------------------------------------------------------------------------
+# backward_kraus_map
+# ---------------------------------------------------------------------------
+
+
+def test_backward_kraus_map_returns_mpo() -> None:
+    """backward_kraus_map returns an MPO of the correct length."""
+    prop = _make_propagator_2site()
+    obs = MPO()
+    obs.identity(prop.sites, prop.hamiltonian.physical_dimension)
+    result = prop.backward_kraus_map(obs, dt=0.1, n=1)
+    assert isinstance(result, MPO)
+    assert result.length == prop.sites
+
+
+def test_backward_kraus_map_identity_observable() -> None:
+    """K(I) = sum_j F_j† F_j; verify against explicit dense sum."""
+    prop = _make_propagator_2site()
+    dt, n = 0.1, 1
+
+    kraus = prop.kraus_operators(dt=dt, n=n)
+
+    # dense reference: sum_j F_j† F_j
+    dim = 2**prop.sites
+    expected = np.zeros((dim, dim), dtype=complex)
+    for f in kraus:
+        f_dense = f.to_sparse_matrix().toarray()
+        expected += f_dense.conj().T @ f_dense
+
+    obs = MPO()
+    obs.identity(prop.sites, prop.hamiltonian.physical_dimension)
+    result = prop.backward_kraus_map(obs, dt=dt, n=n, kraus=kraus)
+    result_dense = result.to_sparse_matrix().toarray()
+
+    np.testing.assert_allclose(result_dense, expected, atol=1e-12)
+
+
+def test_backward_kraus_map_matches_dense() -> None:
+    """K(O) matches the explicit dense sum F_j† O F_j for a non-trivial O."""
+    prop = _make_propagator_2site()
+    dt, n = 0.1, 1
+
+    kraus = prop.kraus_operators(dt=dt, n=n)
+
+    # Use the Ising Hamiltonian MPO as the observable
+    obs = MPO.ising(prop.sites, 1.0, 0.5)
+    obs_dense = obs.to_sparse_matrix().toarray()
+
+    dim = 2**prop.sites
+    expected = np.zeros((dim, dim), dtype=complex)
+    for f in kraus:
+        f_dense = f.to_sparse_matrix().toarray()
+        expected += f_dense.conj().T @ obs_dense @ f_dense
+
+    result = prop.backward_kraus_map(obs, dt=dt, n=n, kraus=kraus)
+    result_dense = result.to_sparse_matrix().toarray()
+
+    np.testing.assert_allclose(result_dense, expected, atol=1e-12)
+
+
+def test_backward_kraus_map_precomputed_kraus() -> None:
+    """Passing pre-computed kraus gives identical result to computing from scratch."""
+    prop = _make_propagator_2site()
+    dt, n = 0.1, 1
+
+    obs = MPO()
+    obs.identity(prop.sites, prop.hamiltonian.physical_dimension)
+
+    kraus = prop.kraus_operators(dt=dt, n=n)
+    result_auto = prop.backward_kraus_map(obs, dt=dt, n=n)
+    result_pre = prop.backward_kraus_map(obs, dt=dt, n=n, kraus=kraus)
+
+    np.testing.assert_allclose(
+        result_pre.to_sparse_matrix().toarray(),
+        result_auto.to_sparse_matrix().toarray(),
+        atol=1e-12,
+    )
