@@ -631,3 +631,90 @@ def test_backward_kraus_map_precomputed_kraus() -> None:
         result_auto.to_sparse_matrix().toarray(),
         atol=1e-12,
     )
+
+
+# ---------------------------------------------------------------------------
+# backward_kraus_map_derivative
+# ---------------------------------------------------------------------------
+
+
+def test_backward_kraus_map_derivative_shape() -> None:
+    """Returns a list of n_jump MPOs, each of correct length."""
+    prop = _make_propagator_2site()
+    obs = MPO.ising(prop.sites, 1.0, 0.5)
+    results = prop.backward_kraus_map_derivative(obs, dt=0.1, n=1)
+    assert len(results) == prop.n_jump
+    for r in results:
+        assert isinstance(r, MPO)
+        assert r.length == prop.sites
+
+
+def test_backward_kraus_map_derivative_matches_dense() -> None:
+    """Every K_{gamma_l}(O) matches the explicit dense formula."""
+    prop = _make_propagator_2site()
+    dt, n = 0.1, 1
+
+    obs = MPO.ising(prop.sites, 1.0, 0.5)
+    obs_dense = obs.to_sparse_matrix().toarray()
+
+    kraus = prop.kraus_operators(dt=dt, n=n)
+    dF = prop.kraus_operators_derivative(dt=dt, n=n, kraus=kraus)
+
+    results = prop.backward_kraus_map_derivative(obs, dt=dt, n=n, kraus=kraus, dF=dF)
+
+    for l_idx in range(prop.n_jump):
+        dim = 2**prop.sites
+        expected = np.zeros((dim, dim), dtype=complex)
+        for j in range(1 + prop.n_jump):
+            f_j = kraus[j].to_sparse_matrix().toarray()
+            df_lj = dF[l_idx][j].to_sparse_matrix().toarray()
+            expected += df_lj.conj().T @ obs_dense @ f_j
+            expected += f_j.conj().T @ obs_dense @ df_lj
+
+        result_dense = results[l_idx].to_sparse_matrix().toarray()
+        np.testing.assert_allclose(result_dense, expected, atol=1e-12)
+
+
+def test_backward_kraus_map_derivative_matches_finite_difference() -> None:
+    """K_{gamma_l}(O) matches central-difference perturbation of K(O)."""
+    prop = _make_propagator_2site()
+    dt, n, eps = 0.1, 1, 1e-5
+
+    obs = MPO.ising(prop.sites, 1.0, 0.5)
+
+    results = prop.backward_kraus_map_derivative(obs, dt=dt, n=n)
+
+    for l_idx, proc in enumerate(prop.expanded_noise_model.processes):
+        gamma_base = float(proc["strength"])
+
+        prop_p = _make_propagator_2site()
+        prop_p.expanded_noise_model.processes[l_idx]["strength"] = gamma_base + eps
+        k_plus = prop_p.backward_kraus_map(obs, dt=dt, n=n).to_sparse_matrix().toarray()
+
+        prop_m = _make_propagator_2site()
+        prop_m.expanded_noise_model.processes[l_idx]["strength"] = gamma_base - eps
+        k_minus = prop_m.backward_kraus_map(obs, dt=dt, n=n).to_sparse_matrix().toarray()
+
+        fd = (k_plus - k_minus) / (2 * eps)
+        result_dense = results[l_idx].to_sparse_matrix().toarray()
+        np.testing.assert_allclose(result_dense, fd, atol=1e-8)
+
+
+def test_backward_kraus_map_derivative_precomputed_inputs() -> None:
+    """Pre-computed kraus and dF give identical result to computing from scratch."""
+    prop = _make_propagator_2site()
+    dt, n = 0.1, 1
+
+    obs = MPO.ising(prop.sites, 1.0, 0.5)
+    kraus = prop.kraus_operators(dt=dt, n=n)
+    dF = prop.kraus_operators_derivative(dt=dt, n=n, kraus=kraus)
+
+    results_auto = prop.backward_kraus_map_derivative(obs, dt=dt, n=n)
+    results_pre = prop.backward_kraus_map_derivative(obs, dt=dt, n=n, kraus=kraus, dF=dF)
+
+    for l_idx in range(prop.n_jump):
+        np.testing.assert_allclose(
+            results_pre[l_idx].to_sparse_matrix().toarray(),
+            results_auto[l_idx].to_sparse_matrix().toarray(),
+            atol=1e-12,
+        )

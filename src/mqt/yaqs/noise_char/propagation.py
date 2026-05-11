@@ -814,6 +814,77 @@ class Propagator:
                 result.compress(tol=tol, max_bond_dim=max_bond_dim)
         return result  # type: ignore[return-value]
 
+    def backward_kraus_map_derivative(
+        self,
+        observable: MPO,
+        dt: float,
+        n: int,
+        *,
+        kraus: list[MPO] | None = None,
+        dF: list[list[MPO]] | None = None,
+        compress: bool = False,
+        tol: float = 1e-12,
+        max_bond_dim: int | None = None,
+    ) -> list[MPO]:
+        r"""Apply the derivative of the backward Kraus map to an observable.
+
+        For each jump rate :math:`\gamma_l` computes
+
+        .. math::
+
+            \mathcal{K}_{\gamma_l}(O)
+            = \sum_j \left(\frac{\partial F_j}{\partial\gamma_l}\right)^\dagger O\,F_j
+            + F_j^\dagger\,O\,\frac{\partial F_j}{\partial\gamma_l}
+
+        returning a list indexed by ``l`` (0-based, matching
+        ``expanded_noise_model.processes[l]``).
+
+        Args:
+            observable: The MPO :math:`O` to which the map is applied.
+            dt: Time step :math:`dt`.
+            n: Neumann expansion order used to approximate
+               :math:`(I - H_{\mathrm{eff}}\,dt)^{-1}`.
+            kraus: Pre-computed ``[F_0, ..., F_M]`` from
+               :meth:`kraus_operators`.  Computed if ``None``.
+            dF: Pre-computed derivative table ``dF[l][j]`` =
+               :math:`\partial F_j/\partial\gamma_l` from
+               :meth:`kraus_operators_derivative`.  Computed if ``None``.
+            compress: If ``True``, compress intermediate and final MPOs.
+            tol: SVD truncation threshold used when ``compress=True``.
+            max_bond_dim: Hard cap on the bond dimension when
+               ``compress=True``; ``None`` means no cap.
+
+        Returns:
+            list[MPO]: ``result[l]`` =
+            :math:`\mathcal{K}_{\gamma_l}(O)` for
+            ``l`` in ``range(n_jump)``.
+
+        Raises:
+            ValueError: If ``n`` is negative (propagated from
+               :meth:`neumann_expansion`).
+        """
+        if kraus is None:
+            kraus = self.kraus_operators(dt, n, compress=compress, tol=tol, max_bond_dim=max_bond_dim)
+        if dF is None:
+            dF = self.kraus_operators_derivative(
+                dt, n, kraus=kraus, compress=compress, tol=tol, max_bond_dim=max_bond_dim
+            )
+
+        results: list[MPO] = []
+        for dF_l in dF:
+            result: MPO | None = None
+            for f_j, df_lj in zip(kraus, dF_l):
+                left = df_lj.adjoint() @ observable @ f_j
+                right = f_j.adjoint() @ observable @ df_lj
+                term = left + right
+                if compress:
+                    term.compress(tol=tol, max_bond_dim=max_bond_dim)
+                result = term if result is None else result + term
+                if compress:
+                    result.compress(tol=tol, max_bond_dim=max_bond_dim)
+            results.append(result)  # type: ignore[arg-type]
+        return results
+
     def write_traj(self, output_file: Path) -> None:
         """Saves the optimized trajectory of expectation values to a text file.
 
