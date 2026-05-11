@@ -393,6 +393,334 @@ class Propagator:
 
         return h_eff
 
+    def neumann_expansion(
+        self,
+        dt: float,
+        n: int,
+        *,
+        compress: bool = False,
+        tol: float = 1e-12,
+        max_bond_dim: int | None = None,
+    ) -> MPO:
+        r"""Return the n-th order Neumann expansion of :math:`(I - H_{\mathrm{eff}}\,dt)^{-1}`.
+
+        Computes
+
+        .. math::
+
+            \sum_{k=0}^{n} (H_{\mathrm{eff}}\,dt)^k
+            = I + H_{\mathrm{eff}}\,dt + (H_{\mathrm{eff}}\,dt)^2 + \cdots
+              + (H_{\mathrm{eff}}\,dt)^n
+
+        entirely in MPO format.  Each additional term multiplies the bond
+        dimension of the running power by that of :math:`H_{\mathrm{eff}}`, so
+        for large ``n`` pass ``compress=True`` to keep the representation
+        compact.
+
+        Args:
+            dt: Time step :math:`dt`.
+            n: Expansion order (number of terms beyond the identity, so the
+               result contains :math:`n+1` terms total).
+            compress: If ``True``, compress the running sum after each
+               accumulation step using SVD sweeps.
+            tol: SVD truncation threshold used when ``compress=True``.
+            max_bond_dim: Hard cap on the bond dimension when
+               ``compress=True``; ``None`` means no cap.
+
+        Returns:
+            MPO: :math:`\sum_{k=0}^{n}(H_{\mathrm{eff}}\,dt)^k`.
+
+        Raises:
+            ValueError: If ``n`` is negative.
+        """
+        if n < 0:
+            msg = "Expansion order n must be non-negative."
+            raise ValueError(msg)
+
+        from mqt.yaqs.core.data_structures.networks import MPO
+
+        d = self.hamiltonian.physical_dimension
+
+        identity = MPO()
+        identity.identity(self.sites, d)
+
+        a = dt * self.effective_hamiltonian()
+
+        result = copy.deepcopy(identity)
+        power = copy.deepcopy(identity)
+
+        for _ in range(n):
+            power = a @ power
+            result = result + power
+            if compress:
+                result.compress(tol=tol, max_bond_dim=max_bond_dim)
+
+        return result
+
+    def kraus_operators(
+        self,
+        dt: float,
+        n: int,
+        *,
+        compress: bool = False,
+        tol: float = 1e-12,
+        max_bond_dim: int | None = None,
+    ) -> list[MPO]:
+        r"""Return the Kraus operators for one no-jump / jump time step.
+
+        Computes
+
+        .. math::
+
+            F_0 &= (I - H_{\mathrm{eff}}\,dt)^{-1} \\
+            F_m &= (I - H_{\mathrm{eff}}\,dt)^{-1}\,\sqrt{\gamma_m\,dt}\;L_m
+                   \quad m = 1,\ldots,M
+
+        where :math:`(I - H_{\mathrm{eff}}\,dt)^{-1}` is approximated by the
+        ``n``-th order Neumann expansion and each :math:`L_m` is the jump
+        operator of the :math:`m`-th noise process with rate :math:`\gamma_m`.
+        All operators are returned as MPOs.
+
+        Args:
+            dt: Time step :math:`dt`.
+            n: Neumann expansion order used to approximate
+               :math:`(I - H_{\mathrm{eff}}\,dt)^{-1}`.
+            compress: If ``True``, compress every MPO product using SVD sweeps.
+            tol: SVD truncation threshold used when ``compress=True``.
+            max_bond_dim: Hard cap on the bond dimension when
+               ``compress=True``; ``None`` means no cap.
+
+        Returns:
+            list[MPO]: ``[F_0, F_1, ..., F_M]`` — the no-jump operator
+            followed by one jump operator per noise process, in the order
+            they appear in ``expanded_noise_model``.
+
+        Raises:
+            ValueError: If ``n`` is negative (propagated from
+               :meth:`neumann_expansion`).
+        """
+        d = self.hamiltonian.physical_dimension
+        n_sites = self.sites
+
+        resolvent = self.neumann_expansion(dt, n, compress=compress, tol=tol, max_bond_dim=max_bond_dim)
+        kraus: list[MPO] = [resolvent]
+
+        for proc in self.expanded_noise_model.processes:
+            gamma = float(proc["strength"])
+            sites = proc["sites"]
+            scale = (gamma * dt) ** 0.5
+
+            if len(sites) == 1:
+                op = np.asarray(proc["matrix"], dtype=complex)
+                l_mpo = self._single_site_mpo(op, sites[0], n_sites, d)
+            elif "matrix" in proc:
+                op = np.asarray(proc["matrix"], dtype=complex)
+                l_mpo = self._adjacent_two_site_mpo(op, sites[0], sites[1], n_sites, d)
+            else:
+                mat1, mat2 = (np.asarray(f, dtype=complex) for f in proc["factors"])
+                l_mpo = self._product_two_site_mpo(mat1, sites[0], mat2, sites[1], n_sites, d)
+
+            f_m = resolvent @ (scale * l_mpo)
+            if compress:
+                f_m.compress(tol=tol, max_bond_dim=max_bond_dim)
+            kraus.append(f_m)
+
+        return kraus
+
+    def kraus_operators_adjoint(
+        self,
+        dt: float,
+        n: int,
+        *,
+        compress: bool = False,
+        tol: float = 1e-12,
+        max_bond_dim: int | None = None,
+    ) -> list[MPO]:
+        r"""Return the adjoints of the Kraus operators.
+
+        Computes :math:`[F_0^\dagger, F_1^\dagger, \ldots, F_M^\dagger]` by
+        calling :meth:`kraus_operators` and taking the Hermitian adjoint of
+        each element via :meth:`~mqt.yaqs.core.data_structures.networks.MPO.adjoint`.
+
+        Args:
+            dt: Time step :math:`dt`.
+            n: Neumann expansion order used to approximate
+               :math:`(I - H_{\mathrm{eff}}\,dt)^{-1}`.
+            compress: If ``True``, compress every MPO using SVD sweeps.
+            tol: SVD truncation threshold used when ``compress=True``.
+            max_bond_dim: Hard cap on the bond dimension when
+               ``compress=True``; ``None`` means no cap.
+
+        Returns:
+            list[MPO]: ``[F_0^\\dagger, F_1^\\dagger, ..., F_M^\\dagger]``.
+
+        Raises:
+            ValueError: If ``n`` is negative (propagated from
+               :meth:`neumann_expansion`).
+        """
+        return [f.adjoint() for f in self.kraus_operators(dt, n, compress=compress, tol=tol, max_bond_dim=max_bond_dim)]
+
+    def kraus_operators_derivative(
+        self,
+        dt: float,
+        n: int,
+        *,
+        resolvent: MPO | None = None,
+        kraus: list[MPO] | None = None,
+        compress: bool = False,
+        tol: float = 1e-12,
+        max_bond_dim: int | None = None,
+    ) -> list[list[MPO]]:
+        r"""Return derivatives of all Kraus operators w.r.t. all jump rates.
+
+        Using 1-based jump index :math:`k` (maps to ``processes[k-1]`` in code)
+        and differentiation index :math:`j`, the formulas are:
+
+        Let :math:`A = H_{\mathrm{eff}}\,dt`, :math:`R^{(n)} = \sum_{p=0}^n A^p`,
+        :math:`B_j = -\tfrac{dt}{2} P_j` where :math:`P_j = L_j^\dagger L_j`.
+        Differentiating :math:`R^{(p)} = I + A\,R^{(p-1)}` term-by-term gives the
+        recursion
+
+        .. math::
+
+            D_j^{(0)} = 0, \qquad
+            D_j^{(p)} = B_j\,R^{(p-1)} + A\,D_j^{(p-1)}
+
+        so that :math:`D_j^{(n)} = \partial R^{(n)} / \partial\gamma_j`.  The
+        Kraus derivatives then follow from the product rule:
+
+        .. math::
+
+            \frac{\partial F_0}{\partial\gamma_j} &= D_j^{(n)} \\[4pt]
+            \frac{\partial F_k}{\partial\gamma_j} &= D_j^{(n)}\,\sqrt{\gamma_k\,dt}\,L_k
+              + \delta_{jk}\,\frac{F_k}{2\gamma_k}
+
+        Args:
+            dt: Time step :math:`dt`.
+            n: Neumann expansion order.
+            resolvent: Ignored (kept for API compatibility); the resolvent is
+                recomputed internally from the Neumann sequence required for the
+                recursion.
+            kraus: Pre-computed list ``[F_0, F_1, ..., F_M]`` from
+                :meth:`kraus_operators`. If ``None``, rebuilt internally.
+            compress: If ``True``, compress each intermediate and output MPO.
+            tol: SVD truncation threshold used when ``compress=True``.
+            max_bond_dim: Hard cap on the bond dimension when
+                ``compress=True``; ``None`` means no cap.
+
+        Returns:
+            list[list[MPO]]: ``dF[j][i]`` =
+            :math:`\partial F_i / \partial \gamma_j` where ``j`` indexes
+            processes (0-based, matching ``expanded_noise_model.processes``)
+            and ``i`` indexes Kraus operators (0 = no-jump, ``k`` = jump
+            operator for process ``k-1``).
+
+        Raises:
+            ValueError: If ``n`` is negative (propagated from
+                :meth:`neumann_expansion`).
+
+        Note:
+            Bond dimensions grow as :math:`\chi_R^2` per derivative entry.
+            Use ``compress=True`` for large ``n``.
+        """
+        from mqt.yaqs.core.data_structures.networks import MPO as _MPO
+
+        d = self.hamiltonian.physical_dimension
+        n_sites = self.sites
+
+        # Build A = dt * H_eff and the Neumann sequence R^(0), ..., R^(n).
+        # The exact derivative of R^(n) w.r.t. gamma_j satisfies the recursion
+        #   D^(0) = 0
+        #   D^(p) = B_j @ R^(p-1) + A @ D^(p-1),   B_j = -dt/2 * P_j
+        # which is derived by differentiating R^(p) = I + A R^(p-1) term-by-term.
+        h_eff = self.effective_hamiltonian()
+        a_mpo = dt * h_eff
+
+        identity = _MPO()
+        identity.identity(n_sites, d)
+
+        neumann_seq: list[MPO] = [copy.deepcopy(identity)]  # neumann_seq[p] = R^(p)
+        for _ in range(n):
+            r_next = copy.deepcopy(identity) + (a_mpo @ neumann_seq[-1])
+            if compress:
+                r_next.compress(tol=tol, max_bond_dim=max_bond_dim)
+            neumann_seq.append(r_next)
+
+        resolvent = neumann_seq[-1]  # R^(n)
+
+        # Build scaled jump MPOs  sqrt(gamma_k dt) L_k  and Kraus operators F_k.
+        processes = self.expanded_noise_model.processes
+        scaled_l_mpos: list[MPO] = []
+        for proc in processes:
+            gamma = float(proc["strength"])
+            sites = proc["sites"]
+            scale = (gamma * dt) ** 0.5
+            if len(sites) == 1:
+                op = np.asarray(proc["matrix"], dtype=complex)
+                l_mpo = self._single_site_mpo(op, sites[0], n_sites, d)
+            elif "matrix" in proc:
+                op = np.asarray(proc["matrix"], dtype=complex)
+                l_mpo = self._adjacent_two_site_mpo(op, sites[0], sites[1], n_sites, d)
+            else:
+                mat1, mat2 = (np.asarray(f, dtype=complex) for f in proc["factors"])
+                l_mpo = self._product_two_site_mpo(mat1, sites[0], mat2, sites[1], n_sites, d)
+            scaled_l_mpos.append(scale * l_mpo)
+
+        if kraus is None:
+            kraus = [resolvent]
+            for sl in scaled_l_mpos:
+                f_k = resolvent @ sl
+                if compress:
+                    f_k.compress(tol=tol, max_bond_dim=max_bond_dim)
+                kraus.append(f_k)
+
+        dF: list[list[MPO]] = []
+
+        for j, proc_j in enumerate(processes):
+            sites_j = proc_j["sites"]
+
+            if len(sites_j) == 1:
+                op_j = np.asarray(proc_j["matrix"], dtype=complex)
+                p_j = self._single_site_mpo(op_j.conj().T @ op_j, sites_j[0], n_sites, d)
+            elif "matrix" in proc_j:
+                op_j = np.asarray(proc_j["matrix"], dtype=complex)
+                p_j = self._adjacent_two_site_mpo(op_j.conj().T @ op_j, sites_j[0], sites_j[1], n_sites, d)
+            else:
+                mat1, mat2 = (np.asarray(f, dtype=complex) for f in proc_j["factors"])
+                p_j = self._product_two_site_mpo(
+                    mat1.conj().T @ mat1, sites_j[0], mat2.conj().T @ mat2, sites_j[1], n_sites, d
+                )
+
+            b_j = (-dt / 2.0) * p_j  # B_j = dA/d gamma_j = -dt/2 * P_j
+
+            # Recursion:  D^(p) = B_j @ R^(p-1) + A @ D^(p-1),  D^(0) = 0
+            d_curr: MPO | None = None
+            for p in range(1, n + 1):
+                term1 = b_j @ neumann_seq[p - 1]
+                d_curr = term1 if d_curr is None else term1 + (a_mpo @ d_curr)
+                if compress:
+                    d_curr.compress(tol=tol, max_bond_dim=max_bond_dim)
+
+            dF_j: list[MPO] = []
+
+            # dF[j][0] = D^(n)  (zero when n=0 since R^(0)=I has no gamma dependence)
+            zero = 0.0 * copy.deepcopy(identity)
+            dF_j.append(zero if d_curr is None else d_curr)
+
+            # dF[j][k] = D^(n) @ (sqrt(gamma_k dt) L_k) + delta_{jk} F_k/(2 gamma_k)
+            for k, (proc_k, sl_k, f_k) in enumerate(zip(processes, scaled_l_mpos, kraus[1:]), start=1):
+                df_k = (0.0 * copy.deepcopy(f_k)) if d_curr is None else (d_curr @ sl_k)
+                if k - 1 == j:  # delta_{jk}: k is 1-based, j is 0-based
+                    gamma_k = float(proc_k["strength"])
+                    df_k = df_k + ((1.0 / (2.0 * gamma_k)) * f_k)
+                if compress:
+                    df_k.compress(tol=tol, max_bond_dim=max_bond_dim)
+                dF_j.append(df_k)
+
+            dF.append(dF_j)
+
+        return dF
+
     def write_traj(self, output_file: Path) -> None:
         """Saves the optimized trajectory of expectation values to a text file.
 

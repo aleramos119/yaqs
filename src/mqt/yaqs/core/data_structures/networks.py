@@ -1976,6 +1976,22 @@ class MPO:
         """
         return self.__mul__(other)
 
+    def adjoint(self) -> MPO:
+        """Return the Hermitian adjoint (dagger) of this MPO.
+
+        For each site tensor of shape ``(phys_out, phys_in, bond_left, bond_right)``
+        the adjoint tensor is the complex conjugate with the two physical indices
+        swapped:  ``conj(T)[σ, σ', α, β] = conj(T[σ', σ, α, β])``.
+
+        Returns:
+            MPO: New MPO representing :math:`O^\\dagger`.
+        """
+        result = MPO()
+        result.tensors = [t.conj().transpose(1, 0, 2, 3) for t in self.tensors]
+        result.length = self.length
+        result.physical_dimension = self.physical_dimension
+        return result
+
     def to_mps(self) -> MPS:
         """MPO to MPS conversion.
 

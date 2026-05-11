@@ -695,6 +695,33 @@ def test_mpo_mul_incompatible_length_raises() -> None:
         _ = H3 @ H4
 
 
+def test_mpo_adjoint_hermitian_matrix() -> None:
+    """adjoint() matches conj().T on the dense matrix for a random operator."""
+    rng = np.random.default_rng(7)
+    d, L = 2, 3
+    n = d**L
+    mat = rng.random((n, n)) + 1j * rng.random((n, n))
+    mpo = MPO.from_matrix(mat, d)
+    expected = mat.conj().T
+    np.testing.assert_allclose(mpo.adjoint().to_matrix(), expected, atol=1e-12)
+
+
+def test_mpo_adjoint_double_adjoint_is_identity() -> None:
+    """Taking the adjoint twice recovers the original operator."""
+    rng = np.random.default_rng(8)
+    d, L = 2, 2
+    n = d**L
+    mat = rng.random((n, n)) + 1j * rng.random((n, n))
+    mpo = MPO.from_matrix(mat, d)
+    np.testing.assert_allclose(mpo.adjoint().adjoint().to_matrix(), mpo.to_matrix(), atol=1e-12)
+
+
+def test_mpo_adjoint_hermitian_operator_is_self_adjoint() -> None:
+    """adjoint() of a Hermitian operator equals itself."""
+    H = MPO.ising(3, 1.0, 0.5)
+    np.testing.assert_allclose(H.adjoint().to_sparse_matrix().toarray(), H.to_sparse_matrix().toarray(), atol=1e-12)
+
+
 ##############################################################################
 # Tests for the MPS class
 ##############################################################################

@@ -243,3 +243,267 @@ def test_raises_errors() -> None:
     msg = "Noise model processes or sites do not match the initialized noise model."
     with pytest.raises(ValueError, match=re.escape(msg)):
         propagator.run(wrong_ref_noise_model)
+
+
+def _make_propagator_2site() -> propagation.Propagator:
+    """Build a minimal 2-site Propagator for Neumann-expansion tests.
+
+    2 sites are required so that MPO boundary bonds properly collapse to 1,
+    making ``to_sparse_matrix`` give the correct full dense matrix.
+    """
+    sites = 2
+    dt = 0.1
+    h_0 = MPO.ising(sites, 1.0, 0.5)
+    init_state = MPS(sites, state="zeros")
+    ref_noise_model = CompactNoiseModel([
+        {"name": "lowering", "sites": list(range(sites)), "strength": 0.1},
+        {"name": "pauli_z", "sites": list(range(sites)), "strength": 0.15},
+    ])
+    sim_params = AnalogSimParams(
+        observables=[Observable(Z(), 0)],
+        elapsed_time=dt,
+        dt=dt,
+        num_traj=1,
+        max_bond_dim=4,
+        threshold=1e-4,
+        order=1,
+    )
+    return propagation.Propagator(
+        sim_params=sim_params,
+        hamiltonian=h_0,
+        compact_noise_model=ref_noise_model,
+        init_state=init_state,
+    )
+
+
+def test_neumann_expansion_order_zero_is_identity() -> None:
+    """Order-0 expansion is the identity MPO."""
+    prop = _make_propagator_2site()
+    result = prop.neumann_expansion(dt=0.1, n=0)
+
+    assert isinstance(result, MPO)
+    assert result.length == prop.sites
+    assert result.physical_dimension == 2
+
+    dim = 2**prop.sites
+    np.testing.assert_allclose(result.to_sparse_matrix().toarray(), np.eye(dim, dtype=complex), atol=1e-12)
+
+
+def test_neumann_expansion_first_order() -> None:
+    """Order-1 expansion equals I + H_eff * dt as a dense matrix."""
+    prop = _make_propagator_2site()
+    dt = 0.1
+    result = prop.neumann_expansion(dt=dt, n=1)
+
+    h_eff_dense = prop.effective_hamiltonian().to_sparse_matrix().toarray()
+    dim = 2**prop.sites
+    expected = np.eye(dim, dtype=complex) + dt * h_eff_dense
+
+    np.testing.assert_allclose(result.to_sparse_matrix().toarray(), expected, atol=1e-10)
+
+
+def test_neumann_expansion_higher_order_matches_dense() -> None:
+    """Order-n expansion matches the dense geometric partial sum."""
+    prop = _make_propagator_2site()
+    dt = 0.1
+    n = 3
+    result = prop.neumann_expansion(dt=dt, n=n)
+
+    h_eff_dense = prop.effective_hamiltonian().to_sparse_matrix().toarray()
+    dim = 2**prop.sites
+    a = dt * h_eff_dense
+    expected = sum(np.linalg.matrix_power(a, k) for k in range(n + 1))
+
+    np.testing.assert_allclose(result.to_sparse_matrix().toarray(), expected, atol=1e-10)
+
+
+def test_neumann_expansion_negative_order_raises() -> None:
+    """Negative expansion order raises ValueError."""
+    test = Parameters()
+    _, _, _, _, _, propagator = create_propagator_instance(test)
+
+    with pytest.raises(ValueError, match="non-negative"):
+        propagator.neumann_expansion(dt=test.dt, n=-1)
+
+
+def test_neumann_expansion_with_compress() -> None:
+    """Compressed expansion gives the same dense result as without compression."""
+    prop = _make_propagator_2site()
+    dt = 0.1
+    n = 2
+    uncompressed = prop.neumann_expansion(dt=dt, n=n)
+    compressed = prop.neumann_expansion(dt=dt, n=n, compress=True, tol=1e-14)
+
+    np.testing.assert_allclose(
+        compressed.to_sparse_matrix().toarray(),
+        uncompressed.to_sparse_matrix().toarray(),
+        atol=1e-10,
+    )
+
+
+def test_kraus_operators_count() -> None:
+    """kraus_operators returns 1 + n_jump MPOs."""
+    prop = _make_propagator_2site()
+    kraus = prop.kraus_operators(dt=0.1, n=1)
+
+    # 1 no-jump operator + one per noise process
+    assert len(kraus) == 1 + prop.n_jump
+    for op in kraus:
+        assert isinstance(op, MPO)
+        assert op.length == prop.sites
+        assert op.physical_dimension == 2
+
+
+def test_kraus_operators_f0_matches_neumann() -> None:
+    """F_0 equals the Neumann expansion of (I - H_eff dt)^{-1}."""
+    prop = _make_propagator_2site()
+    dt = 0.1
+    n = 2
+    kraus = prop.kraus_operators(dt=dt, n=n)
+    resolvent = prop.neumann_expansion(dt=dt, n=n)
+
+    np.testing.assert_allclose(
+        kraus[0].to_sparse_matrix().toarray(),
+        resolvent.to_sparse_matrix().toarray(),
+        atol=1e-12,
+    )
+
+
+def test_kraus_operators_fm_matches_dense() -> None:
+    """Each F_m equals (I - H_eff dt)^{-1} sqrt(gamma_m dt) L_m as a dense matrix."""
+    prop = _make_propagator_2site()
+    dt = 0.1
+    n = 1
+    kraus = prop.kraus_operators(dt=dt, n=n)
+
+    resolvent_dense = kraus[0].to_sparse_matrix().toarray()
+
+    for i, proc in enumerate(prop.expanded_noise_model.processes):
+        gamma = float(proc["strength"])
+        scale = (gamma * dt) ** 0.5
+
+        # Build L_m dense: single-site operator embedded in full Hilbert space
+        from mqt.yaqs.noise_char.propagation import Propagator
+        op = np.asarray(proc["matrix"], dtype=complex)
+        l_mpo = Propagator._single_site_mpo(op, proc["sites"][0], prop.sites, prop.hamiltonian.physical_dimension)
+        l_dense = l_mpo.to_sparse_matrix().toarray()
+
+        expected = resolvent_dense @ (scale * l_dense)
+        np.testing.assert_allclose(kraus[i + 1].to_sparse_matrix().toarray(), expected, atol=1e-10)
+
+
+def test_kraus_operators_adjoint_count_and_type() -> None:
+    """kraus_operators_adjoint returns the same count and shapes as kraus_operators."""
+    prop = _make_propagator_2site()
+    adjoints = prop.kraus_operators_adjoint(dt=0.1, n=1)
+
+    assert len(adjoints) == 1 + prop.n_jump
+    for op in adjoints:
+        assert isinstance(op, MPO)
+        assert op.length == prop.sites
+        assert op.physical_dimension == 2
+
+
+def test_kraus_operators_adjoint_matches_conj_transpose() -> None:
+    """Each F_i^dagger equals conj(F_i).T as a dense matrix."""
+    prop = _make_propagator_2site()
+    dt = 0.1
+    n = 1
+    kraus = prop.kraus_operators(dt=dt, n=n)
+    adjoints = prop.kraus_operators_adjoint(dt=dt, n=n)
+
+    for f, fd in zip(kraus, adjoints):
+        f_dense = f.to_sparse_matrix().toarray()
+        fd_dense = fd.to_sparse_matrix().toarray()
+        np.testing.assert_allclose(fd_dense, f_dense.conj().T, atol=1e-12)
+
+
+def test_kraus_derivative_shape() -> None:
+    """dF has shape [n_jump][1+n_jump] with correct MPO metadata."""
+    prop = _make_propagator_2site()
+    dF = prop.kraus_operators_derivative(dt=0.1, n=1)
+
+    assert len(dF) == prop.n_jump
+    for row in dF:
+        assert len(row) == 1 + prop.n_jump
+        for op in row:
+            assert isinstance(op, MPO)
+            assert op.length == prop.sites
+            assert op.physical_dimension == 2
+
+
+def test_kraus_derivative_f0_formula() -> None:
+    """dF[j][0] matches the exact Neumann recursion result for dR^(n)/dgamma_j.
+
+    For n=1: D^(1) = B_j R^(0) = (-dt/2) P_j I = (-dt/2) P_j.
+    """
+    prop = _make_propagator_2site()
+    dt, n = 0.1, 1
+    dF = prop.kraus_operators_derivative(dt=dt, n=n)
+
+    for j, proc in enumerate(prop.expanded_noise_model.processes):
+        op = np.asarray(proc["matrix"], dtype=complex)
+        ldagl = op.conj().T @ op
+        from mqt.yaqs.noise_char.propagation import Propagator
+        p_j = Propagator._single_site_mpo(ldagl, proc["sites"][0], prop.sites, prop.hamiltonian.physical_dimension)
+        P_j = p_j.to_sparse_matrix().toarray()
+        # For n=1: D^(1) = B_j @ R^(0) = (-dt/2) P_j @ I = (-dt/2) P_j
+        expected = (-dt / 2.0) * P_j
+        np.testing.assert_allclose(dF[j][0].to_sparse_matrix().toarray(), expected, atol=1e-10)
+
+
+def test_kraus_derivative_matches_finite_difference() -> None:
+    """Every dF[j][i] matches a central finite-difference perturbation of gamma_j."""
+    prop = _make_propagator_2site()
+    dt, n, eps = 0.1, 1, 1e-5
+
+    dF = prop.kraus_operators_derivative(dt=dt, n=n)
+    processes = prop.expanded_noise_model.processes
+
+    from mqt.yaqs.core.data_structures.simulation_parameters import AnalogSimParams, Observable
+    from mqt.yaqs.core.libraries.gate_library import Z
+
+    def _kraus_at(delta: float, j: int) -> list:
+        nm = CompactNoiseModel([
+            {
+                "name": p["name"],
+                "sites": list(p["sites"]),
+                "strength": float(p["strength"]) + (delta if k == j else 0.0),
+            }
+            for k, p in enumerate(processes)
+        ])
+        sp = AnalogSimParams(
+            observables=[Observable(Z(), 0)],
+            elapsed_time=dt, dt=dt, num_traj=1,
+            max_bond_dim=4, threshold=1e-4, order=1,
+        )
+        return propagation.Propagator(
+            sim_params=sp, hamiltonian=prop.hamiltonian,
+            compact_noise_model=nm, init_state=prop.init_state,
+        ).kraus_operators(dt=dt, n=n)
+
+    for j in range(len(processes)):
+        k_fwd = _kraus_at(+eps, j)
+        k_bwd = _kraus_at(-eps, j)
+        for i in range(1 + prop.n_jump):
+            fd = (k_fwd[i].to_sparse_matrix().toarray() - k_bwd[i].to_sparse_matrix().toarray()) / (2 * eps)
+            np.testing.assert_allclose(dF[j][i].to_sparse_matrix().toarray(), fd, atol=1e-8)
+
+
+def test_kraus_derivative_precomputed_inputs() -> None:
+    """Passing pre-computed kraus gives identical results to computing from scratch."""
+    prop = _make_propagator_2site()
+    dt, n = 0.1, 1
+
+    kraus = prop.kraus_operators(dt=dt, n=n)
+
+    dF_auto = prop.kraus_operators_derivative(dt=dt, n=n)
+    dF_pre = prop.kraus_operators_derivative(dt=dt, n=n, kraus=kraus)
+
+    for j in range(prop.n_jump):
+        for i in range(1 + prop.n_jump):
+            np.testing.assert_allclose(
+                dF_pre[j][i].to_sparse_matrix().toarray(),
+                dF_auto[j][i].to_sparse_matrix().toarray(),
+                atol=1e-12,
+            )
