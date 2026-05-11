@@ -249,20 +249,15 @@ class AnalogSimParams:
             raise ValueError(msg)
         self.solver = solver
         obs_list: list[Observable] = [] if observables is None else list(observables)
+        _special = {"pvm", "runtime_cost", "max_bond", "total_bond", "mpo_observable"}
         assert all(n.gate.name == "pvm" for n in obs_list) or all(n.gate.name != "pvm" for n in obs_list), (
             "We currently have not implemented mixed observable and projective-measurement simulation."
         )
         self.observables = obs_list
 
         if self.observables:
-            sortable = [
-                obs
-                for obs in self.observables
-                if obs.gate.name not in {"pvm", "runtime_cost", "max_bond", "total_bond"}
-            ]
-            unsorted = [
-                obs for obs in self.observables if obs.gate.name in {"pvm", "runtime_cost", "max_bond", "total_bond"}
-            ]
+            sortable = [obs for obs in self.observables if obs.gate.name not in _special]
+            unsorted = [obs for obs in self.observables if obs.gate.name in _special]
             sorted_obs = sorted(
                 sortable,
                 key=lambda obs: obs.sites[0] if isinstance(obs.sites, list) else obs.sites,
@@ -503,20 +498,15 @@ class StrongSimParams:
         """
         self.noise_model: NoiseModel | None = None
         obs_list: list[Observable] = [] if observables is None else list(observables)
+        _special = {"pvm", "runtime_cost", "max_bond", "total_bond", "mpo_observable"}
         assert all(n.gate.name == "pvm" for n in obs_list) or all(n.gate.name != "pvm" for n in obs_list), (
             "We currently have not implemented mixed observable and projective-measurement simulation."
         )
         self.observables = obs_list
 
         if self.observables:
-            sortable = [
-                obs
-                for obs in self.observables
-                if obs.gate.name not in {"pvm", "runtime_cost", "max_bond", "total_bond"}
-            ]
-            unsorted = [
-                obs for obs in self.observables if obs.gate.name in {"pvm", "runtime_cost", "max_bond", "total_bond"}
-            ]
+            sortable = [obs for obs in self.observables if obs.gate.name not in _special]
+            unsorted = [obs for obs in self.observables if obs.gate.name in _special]
             sorted_obs = sorted(
                 sortable,
                 key=lambda obs: obs.sites[0] if isinstance(obs.sites, list) else obs.sites,

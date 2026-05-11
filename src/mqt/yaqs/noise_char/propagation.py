@@ -25,11 +25,17 @@ if TYPE_CHECKING:
     from mqt.yaqs.core.data_structures.noise_model import CompactNoiseModel, NoiseModel
 
 
-class _GradientObservable:
-    """MPO-based gradient observable; not passed to the stochastic simulator.
+class _MPOGate:
+    """Minimal gate-like stub so that MPO-based observables pass simulator checks."""
 
-    Stores ``M = K'_{gamma_l}(K^i(O_n))`` and the pre-computed expectation
-    value ``<psi_0|M|psi_0>``.
+    name: str = "mpo_observable"
+
+
+class _GradientObservable:
+    """MPO-based gradient observable measured by the stochastic simulator.
+
+    Wraps ``M = K'_{gamma_l}(K^i(O_n))`` and satisfies the duck-typed interface
+    expected by ``AnalogSimParams`` and ``MPS.evaluate_observables``.
     """
 
     def __init__(self, mpo: MPO, n_obs_idx: int, l_jump_idx: int, i_lag: int, n_sites: int, result: float) -> None:
@@ -39,7 +45,20 @@ class _GradientObservable:
         self.l_jump_idx = l_jump_idx
         self.i_lag = i_lag
         self.sites: list[int] = list(range(n_sites))
+        self.gate = _MPOGate()
         self.results: float = result
+        self.trajectories = None
+
+    def initialize(self, sim_params: AnalogSimParams) -> None:
+        """Allocate result arrays so the simulator can write into them."""
+        import numpy as _np
+
+        if sim_params.sample_timesteps:
+            self.trajectories = _np.empty((sim_params.num_traj, len(sim_params.times)), dtype=float)
+            self.results = _np.empty(len(sim_params.times), dtype=float)
+        else:
+            self.trajectories = _np.empty((sim_params.num_traj, 1), dtype=float)
+            self.results = _np.empty(1, dtype=float)
 
 
 def noise_model_to_operator_list(noise_model: NoiseModel) -> list[Observable]:
@@ -1105,12 +1124,8 @@ class Propagator:
                     msg = "Noise model processes or sites do not match the initialized noise model."
                     raise ValueError(msg)
 
-        # _GradientObservable entries are computed analytically; exclude them
-        # from the stochastic simulator.
-        simulator_obs = [obs for obs in self.obs_list if not isinstance(obs, _GradientObservable)]
-
         sim_params = AnalogSimParams(
-            observables=simulator_obs,
+            observables=self.obs_list,
             elapsed_time=self.sim_params.elapsed_time,
             dt=self.sim_params.dt,
             num_traj=self.sim_params.num_traj,

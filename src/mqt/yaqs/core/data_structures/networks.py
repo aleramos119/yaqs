@@ -707,6 +707,13 @@ class MPS:
                 assert hasattr(observable.gate, "bitstring"), "Gate does not have attribute bitstring."
                 results[obs_index, column_index] = self.project_onto_bitstring(observable.gate.bitstring)
 
+            elif observable.gate.name == "mpo_observable":
+                # Full-chain MPS-MPO-MPS boundary contraction: <psi|O|psi>
+                boundary = np.ones((1, 1, 1), dtype=complex)
+                for mps_t, mpo_t in zip(self.tensors, observable.mpo.tensors):
+                    boundary = np.einsum("aeb, dac, dfeg, fbh -> cgh", boundary, mps_t.conj(), mpo_t, mps_t)
+                results[obs_index, column_index] = float(np.real(boundary.squeeze()))
+
             else:
                 idx = observable.sites[0] if isinstance(observable.sites, list) else observable.sites
                 if idx > last_site:
