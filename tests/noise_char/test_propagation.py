@@ -7,9 +7,12 @@
 
 """Unit tests for the propagation module's noise characterization functionality."""
 
+# ruff: noqa: DOC201,N806,PLC0415,PLC2701,SLF001
+
 from __future__ import annotations
 
 import re
+from typing import cast
 
 import numpy as np
 import pytest
@@ -169,7 +172,7 @@ def test_propagatorwithgradients_runs() -> None:
 
     _, _, _obs_list, _, ref_noise_model, propagator = create_propagator_instance(test)
 
-    propagator.run(ref_noise_model)
+    propagator.run(ref_noise_model, n_neumann=2)
 
     assert isinstance(propagator.times, np.ndarray)
     assert isinstance(propagator.obs_array, np.ndarray)
@@ -226,7 +229,7 @@ def test_raises_errors() -> None:
     msg = "Observable list not set. Please use the set_observable_list method to set the observables."
 
     with pytest.raises(ValueError, match=re.escape(msg)):
-        propagator.run(ref_noise_model)
+        propagator.run(ref_noise_model, n_neumann=2)
 
     # Test that Propagator raises a ValueError when
     # the provided noise model does not match the initialized noise model.
@@ -242,7 +245,7 @@ def test_raises_errors() -> None:
 
     msg = "Noise model processes or sites do not match the initialized noise model."
     with pytest.raises(ValueError, match=re.escape(msg)):
-        propagator.run(wrong_ref_noise_model)
+        propagator.run(wrong_ref_noise_model, n_neumann=2)
 
 
 def _make_propagator_2site() -> propagation.Propagator:
@@ -310,7 +313,7 @@ def test_neumann_expansion_higher_order_matches_dense() -> None:
     result = prop.neumann_expansion(dt=dt, n=n)
 
     h_eff_dense = prop.effective_hamiltonian().to_sparse_matrix().toarray()
-    dim = 2**prop.sites
+    2**prop.sites
     a = dt * h_eff_dense
     expected = sum(np.linalg.matrix_power(a, k) for k in range(n + 1))
 
@@ -384,6 +387,7 @@ def test_kraus_operators_fm_matches_dense() -> None:
 
         # Build L_m dense: single-site operator embedded in full Hilbert space
         from mqt.yaqs.noise_char.propagation import Propagator
+
         op = np.asarray(proc["matrix"], dtype=complex)
         l_mpo = Propagator._single_site_mpo(op, proc["sites"][0], prop.sites, prop.hamiltonian.physical_dimension)
         l_dense = l_mpo.to_sparse_matrix().toarray()
@@ -412,14 +416,14 @@ def test_kraus_operators_adjoint_matches_conj_transpose() -> None:
     kraus = prop.kraus_operators(dt=dt, n=n)
     adjoints = prop.kraus_operators_adjoint(dt=dt, n=n)
 
-    for f, fd in zip(kraus, adjoints):
+    for f, fd in zip(kraus, adjoints, strict=False):
         f_dense = f.to_sparse_matrix().toarray()
         fd_dense = fd.to_sparse_matrix().toarray()
         np.testing.assert_allclose(fd_dense, f_dense.conj().T, atol=1e-12)
 
 
 def test_kraus_derivative_shape() -> None:
-    """dF has shape [n_jump][1+n_jump] with correct MPO metadata."""
+    """DF has shape [n_jump][1+n_jump] with correct MPO metadata."""
     prop = _make_propagator_2site()
     dF = prop.kraus_operators_derivative(dt=0.1, n=1)
 
@@ -445,6 +449,7 @@ def test_kraus_derivative_f0_formula() -> None:
         op = np.asarray(proc["matrix"], dtype=complex)
         ldagl = op.conj().T @ op
         from mqt.yaqs.noise_char.propagation import Propagator
+
         p_j = Propagator._single_site_mpo(ldagl, proc["sites"][0], prop.sites, prop.hamiltonian.physical_dimension)
         P_j = p_j.to_sparse_matrix().toarray()
         # For n=1: D^(1) = B_j @ R^(0) = (-dt/2) P_j @ I = (-dt/2) P_j
@@ -474,12 +479,18 @@ def test_kraus_derivative_matches_finite_difference() -> None:
         ])
         sp = AnalogSimParams(
             observables=[Observable(Z(), 0)],
-            elapsed_time=dt, dt=dt, num_traj=1,
-            max_bond_dim=4, threshold=1e-4, order=1,
+            elapsed_time=dt,
+            dt=dt,
+            num_traj=1,
+            max_bond_dim=4,
+            threshold=1e-4,
+            order=1,
         )
         return propagation.Propagator(
-            sim_params=sp, hamiltonian=prop.hamiltonian,
-            compact_noise_model=nm, init_state=prop.init_state,
+            sim_params=sp,
+            hamiltonian=prop.hamiltonian,
+            compact_noise_model=nm,
+            init_state=prop.init_state,
         ).kraus_operators(dt=dt, n=n)
 
     for j in range(len(processes)):
@@ -825,17 +836,16 @@ def test_append_gradient_observables_matches_formula() -> None:
     prop.append_gradient_observables(dt=dt, n_neumann=n)
 
     for n_idx, obs in enumerate(prop.obs_list[: prop.n_obs]):
-        sites = [obs.sites] if isinstance(obs.sites, int) else list(obs.sites)
-        obs_mpo = Propagator._single_site_mpo(obs.gate.matrix, sites[0], prop.sites, d)
+        obs_typed = cast("Observable", obs)
+        sites = [obs_typed.sites] if isinstance(obs_typed.sites, int) else list(obs_typed.sites)
+        obs_mpo = Propagator._single_site_mpo(obs_typed.gate.matrix, sites[0], prop.sites, d)
 
         q = obs_mpo
         for i_lag in range(prop.n_t - 1):
             grad_mpos = prop.backward_kraus_map_derivative(q, dt, n, kraus=kraus, dF=dF)
             for l_idx, gm in enumerate(grad_mpos):
                 expected = Propagator._mps_mpo_expectation(gm, prop.init_state)
-                np.testing.assert_allclose(
-                    prop.gradient_obs_array[n_idx, l_idx, i_lag], expected, atol=1e-12
-                )
+                np.testing.assert_allclose(prop.gradient_obs_array[n_idx, l_idx, i_lag], expected, atol=1e-12)
             if i_lag < prop.n_t - 2:
                 q = prop.backward_kraus_map(q, dt, n, kraus=kraus)
 

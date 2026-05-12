@@ -188,7 +188,7 @@ def create_instances(
     )
 
     propagator.set_observable_list(obs_list)
-    propagator.run(ref_noise_model)
+    propagator.run(ref_noise_model, n_neumann=2)
 
     loss = LossClass(ref_traj=propagator.obs_traj, propagator=propagator, working_dir=tmp_path, print_to_file=False)
 

@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import copy
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 
@@ -46,19 +46,17 @@ class _GradientObservable:
         self.i_lag = i_lag
         self.sites: list[int] = list(range(n_sites))
         self.gate = _MPOGate()
-        self.results: float = result
+        self.results: float | np.ndarray = result
         self.trajectories = None
 
     def initialize(self, sim_params: AnalogSimParams) -> None:
         """Allocate result arrays so the simulator can write into them."""
-        import numpy as _np
-
         if sim_params.sample_timesteps:
-            self.trajectories = _np.empty((sim_params.num_traj, len(sim_params.times)), dtype=float)
-            self.results = _np.empty(len(sim_params.times), dtype=float)
+            self.trajectories = np.empty((sim_params.num_traj, len(sim_params.times)), dtype=float)
+            self.results = np.empty(len(sim_params.times), dtype=float)
         else:
-            self.trajectories = _np.empty((sim_params.num_traj, 1), dtype=float)
-            self.results = _np.empty(1, dtype=float)
+            self.trajectories = np.empty((sim_params.num_traj, 1), dtype=float)
+            self.results = np.empty(1, dtype=float)
 
 
 def noise_model_to_operator_list(noise_model: NoiseModel) -> list[Observable]:
@@ -260,7 +258,9 @@ class Propagator:
             ValueError: If obs_list is empty (which makes site-index validation via max()
                 impossible) or if observables do not provide valid site information.
         """
-        self.obs_list = copy.deepcopy(obs_list)
+        self.obs_list: list[Observable | _GradientObservable] = cast(
+            "list[Observable | _GradientObservable]", copy.deepcopy(obs_list)
+        )
 
         all_obs_sites = [
             site for obs in obs_list for site in (obs.sites if isinstance(obs.sites, list) else [obs.sites])
@@ -287,7 +287,7 @@ class Propagator:
         Returns:
             MPO with bond dimension 1 throughout.
         """
-        from mqt.yaqs.core.data_structures.networks import MPO
+        from mqt.yaqs.core.data_structures.networks import MPO  # noqa: PLC0415
 
         identity = np.eye(d, dtype=complex).reshape(d, d, 1, 1)
         tensors = [identity.copy() if i != site else op.astype(complex).reshape(d, d, 1, 1) for i in range(length)]
@@ -315,7 +315,7 @@ class Propagator:
         Returns:
             MPO representing ``op`` embedded in the full chain.
         """
-        from mqt.yaqs.core.data_structures.networks import MPO
+        from mqt.yaqs.core.data_structures.networks import MPO  # noqa: PLC0415
 
         # Reshape: op[out_a*d+out_b, in_a*d+in_b] → op4[out_a, out_b, in_a, in_b]
         # Transpose → m[out_a*d+in_a, out_b*d+in_b], then SVD.
@@ -343,9 +343,7 @@ class Propagator:
         return result
 
     @staticmethod
-    def _product_two_site_mpo(
-        op1: np.ndarray, site1: int, op2: np.ndarray, site2: int, length: int, d: int
-    ) -> MPO:
+    def _product_two_site_mpo(op1: np.ndarray, site1: int, op2: np.ndarray, site2: int, length: int, d: int) -> MPO:
         """Build an MPO for the product operator ``op1 ⊗ op2`` at non-adjacent sites.
 
         Both ``op1`` and ``op2`` are single-site operators; identity is placed on all
@@ -362,7 +360,7 @@ class Propagator:
         Returns:
             MPO representing ``op1 ⊗ I ⊗ ... ⊗ I ⊗ op2`` embedded in the full chain.
         """
-        from mqt.yaqs.core.data_structures.networks import MPO
+        from mqt.yaqs.core.data_structures.networks import MPO  # noqa: PLC0415
 
         identity = np.eye(d, dtype=complex).reshape(d, d, 1, 1)
         tensors = []
@@ -425,7 +423,7 @@ class Propagator:
                 ldagl2 = mat2.conj().T @ mat2
                 term_mpo = self._product_two_site_mpo(ldagl1, sites[0], ldagl2, sites[1], n, d)
 
-            h_eff = h_eff + ((-0.5 * gamma) * term_mpo)
+            h_eff += (-0.5 * gamma) * term_mpo
 
         return h_eff
 
@@ -473,7 +471,7 @@ class Propagator:
             msg = "Expansion order n must be non-negative."
             raise ValueError(msg)
 
-        from mqt.yaqs.core.data_structures.networks import MPO
+        from mqt.yaqs.core.data_structures.networks import MPO  # noqa: PLC0415
 
         d = self.hamiltonian.physical_dimension
 
@@ -487,7 +485,7 @@ class Propagator:
 
         for _ in range(n):
             power = a @ power
-            result = result + power
+            result += power
             if compress:
                 result.compress(tol=tol, max_bond_dim=max_bond_dim)
 
@@ -530,10 +528,6 @@ class Propagator:
             list[MPO]: ``[F_0, F_1, ..., F_M]`` — the no-jump operator
             followed by one jump operator per noise process, in the order
             they appear in ``expanded_noise_model``.
-
-        Raises:
-            ValueError: If ``n`` is negative (propagated from
-               :meth:`neumann_expansion`).
         """
         d = self.hamiltonian.physical_dimension
         n_sites = self.sites
@@ -589,10 +583,6 @@ class Propagator:
 
         Returns:
             list[MPO]: ``[F_0^\\dagger, F_1^\\dagger, ..., F_M^\\dagger]``.
-
-        Raises:
-            ValueError: If ``n`` is negative (propagated from
-               :meth:`neumann_expansion`).
         """
         return [f.adjoint() for f in self.kraus_operators(dt, n, compress=compress, tol=tol, max_bond_dim=max_bond_dim)]
 
@@ -651,15 +641,11 @@ class Propagator:
             and ``i`` indexes Kraus operators (0 = no-jump, ``k`` = jump
             operator for process ``k-1``).
 
-        Raises:
-            ValueError: If ``n`` is negative (propagated from
-                :meth:`neumann_expansion`).
-
         Note:
             Bond dimensions grow as :math:`\chi_R^2` per derivative entry.
             Use ``compress=True`` for large ``n``.
         """
-        from mqt.yaqs.core.data_structures.networks import MPO as _MPO
+        from mqt.yaqs.core.data_structures.networks import MPO as _MPO  # noqa: PLC0415
 
         d = self.hamiltonian.physical_dimension
         n_sites = self.sites
@@ -710,7 +696,7 @@ class Propagator:
                     f_k.compress(tol=tol, max_bond_dim=max_bond_dim)
                 kraus.append(f_k)
 
-        dF: list[list[MPO]] = []
+        dF: list[list[MPO]] = []  # noqa: N806
 
         for j, proc_j in enumerate(processes):
             sites_j = proc_j["sites"]
@@ -737,18 +723,18 @@ class Propagator:
                 if compress:
                     d_curr.compress(tol=tol, max_bond_dim=max_bond_dim)
 
-            dF_j: list[MPO] = []
+            dF_j: list[MPO] = []  # noqa: N806
 
             # dF[j][0] = D^(n)  (zero when n=0 since R^(0)=I has no gamma dependence)
             zero = 0.0 * copy.deepcopy(identity)
             dF_j.append(zero if d_curr is None else d_curr)
 
             # dF[j][k] = D^(n) @ (sqrt(gamma_k dt) L_k) + delta_{jk} F_k/(2 gamma_k)
-            for k, (proc_k, sl_k, f_k) in enumerate(zip(processes, scaled_l_mpos, kraus[1:]), start=1):
+            for k, (proc_k, sl_k, f_k) in enumerate(zip(processes, scaled_l_mpos, kraus[1:], strict=False), start=1):
                 df_k = (0.0 * copy.deepcopy(f_k)) if d_curr is None else (d_curr @ sl_k)
                 if k - 1 == j:  # delta_{jk}: k is 1-based, j is 0-based
                     gamma_k = float(proc_k["strength"])
-                    df_k = df_k + ((1.0 / (2.0 * gamma_k)) * f_k)
+                    df_k += (1.0 / (2.0 * gamma_k)) * f_k
                 if compress:
                     df_k.compress(tol=tol, max_bond_dim=max_bond_dim)
                 dF_j.append(df_k)
@@ -788,10 +774,6 @@ class Propagator:
         Returns:
             list[list[MPO]]: ``dF_adj[j][i]`` =
             :math:`(\partial F_i/\partial\gamma_j)^\dagger`.
-
-        Raises:
-            ValueError: If ``n`` is negative (propagated from
-                :meth:`neumann_expansion`).
         """
         return [
             [op.adjoint() for op in row]
@@ -832,10 +814,6 @@ class Propagator:
 
         Returns:
             MPO: :math:`\sum_j F_j^\dagger\, O\, F_j`.
-
-        Raises:
-            ValueError: If ``n`` is negative (propagated from
-               :meth:`neumann_expansion`).
         """
         if kraus is None:
             kraus = self.kraus_operators(dt, n, compress=compress, tol=tol, max_bond_dim=max_bond_dim)
@@ -848,7 +826,8 @@ class Propagator:
             result = term if result is None else result + term
             if compress:
                 result.compress(tol=tol, max_bond_dim=max_bond_dim)
-        return result  # type: ignore[return-value]
+        assert result is not None
+        return result
 
     def backward_kraus_map_derivative(
         self,
@@ -857,7 +836,7 @@ class Propagator:
         n: int,
         *,
         kraus: list[MPO] | None = None,
-        dF: list[list[MPO]] | None = None,
+        dF: list[list[MPO]] | None = None,  # noqa: N803
         compress: bool = False,
         tol: float = 1e-12,
         max_bond_dim: int | None = None,
@@ -894,22 +873,18 @@ class Propagator:
             list[MPO]: ``result[l]`` =
             :math:`\mathcal{K}_{\gamma_l}(O)` for
             ``l`` in ``range(n_jump)``.
-
-        Raises:
-            ValueError: If ``n`` is negative (propagated from
-               :meth:`neumann_expansion`).
         """
         if kraus is None:
             kraus = self.kraus_operators(dt, n, compress=compress, tol=tol, max_bond_dim=max_bond_dim)
         if dF is None:
-            dF = self.kraus_operators_derivative(
+            dF = self.kraus_operators_derivative(  # noqa: N806
                 dt, n, kraus=kraus, compress=compress, tol=tol, max_bond_dim=max_bond_dim
             )
 
         results: list[MPO] = []
-        for dF_l in dF:
+        for dF_l in dF:  # noqa: N806
             result: MPO | None = None
-            for f_j, df_lj in zip(kraus, dF_l):
+            for f_j, df_lj in zip(kraus, dF_l, strict=False):
                 left = df_lj.adjoint() @ observable @ f_j
                 right = f_j.adjoint() @ observable @ df_lj
                 term = left + right
@@ -918,7 +893,8 @@ class Propagator:
                 result = term if result is None else result + term
                 if compress:
                     result.compress(tol=tol, max_bond_dim=max_bond_dim)
-            results.append(result)  # type: ignore[arg-type]
+            assert result is not None
+            results.append(result)
         return results
 
     @staticmethod
@@ -934,7 +910,7 @@ class Propagator:
         """
         # boundary[chi_bra, w, chi_ket] — starts at (1,1,1)
         boundary = np.ones((1, 1, 1), dtype=complex)
-        for mps_t, mpo_t in zip(mps.tensors, mpo.tensors):
+        for mps_t, mpo_t in zip(mps.tensors, mpo.tensors, strict=False):
             # a=chi_bra_l, e=w_l, b=chi_ket_l  (from boundary)
             # d=phys_bra (contracts with mpo d_out), c=chi_bra_r
             # f=phys_ket (contracts with mpo d_in), g=w_r, h=chi_ket_r
@@ -990,13 +966,13 @@ class Propagator:
         n_lags = self.n_t - 1  # i = 0 .. n_t - 2
 
         kraus = self.kraus_operators(dt, n_neumann, compress=compress, tol=tol, max_bond_dim=max_bond_dim)
-        dF = self.kraus_operators_derivative(
+        dF = self.kraus_operators_derivative(  # noqa: N806
             dt, n_neumann, kraus=kraus, compress=compress, tol=tol, max_bond_dim=max_bond_dim
         )
 
         self.gradient_obs_array = np.zeros((self.n_obs, self.n_jump, n_lags))
 
-        for n_idx, obs in enumerate(self.obs_list):
+        for n_idx, obs in enumerate(list(self.obs_list)):
             if isinstance(obs, _GradientObservable):
                 continue
 
@@ -1008,8 +984,9 @@ class Propagator:
                 obs_mpo = self._adjacent_two_site_mpo(obs.gate.matrix, sites[0], sites[1], self.sites, d)
             elif len(sites) == 2:
                 if hasattr(obs.gate, "factors"):
+                    gate_factors = cast("tuple", obs.gate.factors)
                     obs_mpo = self._product_two_site_mpo(
-                        obs.gate.factors[0], sites[0], obs.gate.factors[1], sites[1], self.sites, d
+                        gate_factors[0], sites[0], gate_factors[1], sites[1], self.sites, d
                     )
                 else:
                     msg = f"Observable on non-adjacent sites {sites} has no 'factors' attribute."
@@ -1068,7 +1045,15 @@ class Propagator:
 
         np.savetxt(output_file, exp_vals_traj_with_t.T, header=header, fmt="%.6f")
 
-    def run(self, noise_model: CompactNoiseModel) -> None:
+    def run(
+        self,
+        noise_model: CompactNoiseModel,
+        n_neumann: int,
+        *,
+        compress: bool = False,
+        tol: float = 1e-12,
+        max_bond_dim: int | None = None,
+    ) -> None:
         """Run the propagation routine with augmented Lindblad-derived operators.
 
         Parameters
@@ -1079,6 +1064,14 @@ class Propagator:
             in `noise_model` match the model used to initialize this propagator
             (self.compact_noise_model). The expanded form of this model is passed
             to the underlying simulator.
+        n_neumann : int
+            Neumann expansion order passed to :meth:`append_gradient_observables`.
+        compress : bool
+            If ``True``, compress intermediate MPOs via SVD sweeps.
+        tol : float
+            SVD truncation threshold used when ``compress=True``.
+        max_bond_dim : int or None
+            Hard cap on bond dimension when ``compress=True``.
 
         Side effects / State changes
         ----------------------------
@@ -1096,6 +1089,8 @@ class Propagator:
         - self.obs_array : numpy.ndarray
             2D array of numeric trajectories for the original observables
             (shape [n_obs, n_timesteps]).
+        - self.gradient_obs_array : numpy.ndarray of shape (n_obs, n_jump, n_t - 1)
+            Analytically computed gradient expectation values.
         - self.times : array-like
             Time grid used by the simulation (copied from self.sim_params.times).
 
@@ -1103,13 +1098,6 @@ class Propagator:
             ValueError: If the observable list has not been initialized (self.set_observables is False).
             ValueError: If any process name or site in the provided noise_model does not match
               the corresponding entry in self.compact_noise_model.
-
-        Notes:
-        -----
-        - The purpose of the added A_kn observables is to provide sensitivity-like
-          quantities (derivatives of observable expectations with respect to
-          jump rates) that are computed by the same underlying simulator and then
-          post-processed into arrays suitable for analysis or parameter updates.
         """
         if not self.set_observables:
             msg = "Observable list not set. Please use the set_observable_list method to set the observables."
@@ -1124,8 +1112,22 @@ class Propagator:
                     msg = "Noise model processes or sites do not match the initialized noise model."
                     raise ValueError(msg)
 
+        n_original_obs = len(self.obs_list)
+
+        # Append gradient observables (pre-computed analytically) to a separate list,
+        # leaving self.obs_list unchanged.
+        self.append_gradient_observables(
+            self.sim_params.dt,
+            n_neumann,
+            compress=compress,
+            tol=tol,
+            max_bond_dim=max_bond_dim,
+        )
+        sim_obs_list = list(self.obs_list)
+        self.obs_list = sim_obs_list[:n_original_obs]
+
         sim_params = AnalogSimParams(
-            observables=self.obs_list,
+            observables=cast("list[Observable]", sim_obs_list),
             elapsed_time=self.sim_params.elapsed_time,
             dt=self.sim_params.dt,
             num_traj=self.sim_params.num_traj,
@@ -1137,9 +1139,16 @@ class Propagator:
 
         simulator.run(self.init_state, self.hamiltonian, sim_params, noise_model.expanded_noise_model)
 
-        # Separate original and new expectation values from result_lindblad.
-        self.obs_traj = sim_params.observables
+        # Split results: first n_original_obs entries are original obs, the rest are gradient obs.
+        all_obs = sim_params.observables
+        self.obs_traj = all_obs[:n_original_obs]
+        self.gradient_obs_traj = cast("list[_GradientObservable]", all_obs[n_original_obs:])
 
         self.times = self.sim_params.times
 
         self.obs_array = np.array([obs.results for obs in self.obs_traj])
+
+        n_lags = self.n_t - 1
+        self.gradient_obs_array = np.zeros((self.n_obs, self.n_jump, n_lags, self.n_t))
+        for grad_obs in self.gradient_obs_traj:
+            self.gradient_obs_array[grad_obs.n_obs_idx, grad_obs.l_jump_idx, grad_obs.i_lag, :] = grad_obs.results

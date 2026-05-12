@@ -54,6 +54,8 @@ class LossClass:
         num_traj: Callable[[int], int] = lineal_function_1000,
         print_to_file: bool = False,
         return_numeric_gradients: bool = False,
+        return_analytical_gradients: bool = False,
+        n_neumann: int = 2,
         epsilon: float = 1e-3,
     ) -> None:
         """Initializes the optimization class for noise characterization.
@@ -66,6 +68,8 @@ class LossClass:
                                                     evaluation count. Default lineal_function_1000.
             print_to_file (bool, optional): If True, enables printing output to a file. Default False.
             return_numeric_gradients (bool, optional): If True, compute gradients numerically. Default False.
+            return_analytical_gradients (bool, optional): If True, compute gradients analytically. Default False.
+            n_neumann (int, optional): Neumann expansion order for gradient computation. Default 2.
             epsilon (float, optional): Step size for numerical gradients. Default 1e-3.
 
         Attributes:
@@ -114,6 +118,10 @@ class LossClass:
         self.write_traj(obs_array=self.ref_traj_array, output_file=self.work_dir / "ref_traj.txt")
 
         self.return_numeric_gradients = return_numeric_gradients
+
+        self.return_analytical_gradients = return_analytical_gradients
+
+        self.n_neumann = n_neumann
 
         self.epsilon = epsilon
 
@@ -382,9 +390,11 @@ class LossClass:
 
         self.propagator.sim_params.num_traj = self.num_traj(self.n_eval)
 
-        self.propagator.run(noise_model)
+        self.propagator.run(noise_model, self.n_neumann)
 
         self.obs_array = copy.deepcopy(self.propagator.obs_array)
+
+        self.gradient_obs_array = copy.deepcopy(self.propagator.gradient_obs_array)
 
         end_time = time.time()
 
@@ -393,6 +403,20 @@ class LossClass:
         loss: float = np.sum(diff**2) * self.loss_scale_factor
 
         sim_time = end_time - start_time  # Simulation time
+
+        if self.return_analytical_gradients:
+            d_on_d_gl = np.zeros((self.n_obs, self.d, self.n_t))
+
+            d_on_d_gl[:, :, 0] = 0
+
+            for k in range(1, self.n_t):
+                index = np.arange(k)
+
+                d_on_d_gl[:, :, k] = np.sum(self.gradient_obs_array[:, :, index, k - index - 1], axis=-1)
+
+            grad = 2 * self.loss_scale_factor * np.einsum("nt,ndt->d", diff, d_on_d_gl)
+
+            return loss, grad, sim_time
 
         if self.return_numeric_gradients:
             grad = np.zeros_like(x)
@@ -403,7 +427,7 @@ class LossClass:
 
                 noise_model_plus = self.x_to_noise_model(x_plus)
 
-                self.propagator.run(noise_model_plus)
+                self.propagator.run(noise_model_plus, self.n_neumann)
                 obs_array_plus = copy.deepcopy(self.propagator.obs_array)
 
                 diff_plus = obs_array_plus - self.ref_traj_array
