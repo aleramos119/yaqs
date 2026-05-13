@@ -154,6 +154,7 @@ class Propagator:
         hamiltonian: MPO,
         compact_noise_model: CompactNoiseModel,
         init_state: MPS,
+        compute_gradient_obs: bool = False,
     ) -> None:
         """Initialize a Propagation object for simulating open quantum system dynamics.
 
@@ -229,6 +230,8 @@ class Propagator:
         self.n_t: int = len(self.sim_params.times)  # number of time steps
 
         self.sites: int = self.hamiltonian.length  # number of sites in the chain
+
+        self.compute_gradient_obs: bool = compute_gradient_obs
 
         self.set_observables: bool = False
 
@@ -1114,20 +1117,19 @@ class Propagator:
 
         n_original_obs = len(self.obs_list)
 
-        # Append gradient observables (pre-computed analytically) to a separate list,
-        # leaving self.obs_list unchanged.
-        self.append_gradient_observables(
-            self.sim_params.dt,
-            n_neumann,
-            compress=compress,
-            tol=tol,
-            max_bond_dim=max_bond_dim,
-        )
-        sim_obs_list = list(self.obs_list)
-        self.obs_list = sim_obs_list[:n_original_obs]
+        if self.compute_gradient_obs:
+            # Re-build gradient observables fresh for this run (clears any from a prior call).
+            self.obs_list = [obs for obs in self.obs_list if not isinstance(obs, _GradientObservable)]
+            self.append_gradient_observables(
+                self.sim_params.dt,
+                n_neumann,
+                compress=compress,
+                tol=tol,
+                max_bond_dim=max_bond_dim,
+            )
 
         sim_params = AnalogSimParams(
-            observables=cast("list[Observable]", sim_obs_list),
+            observables=cast("list[Observable]", self.obs_list),
             elapsed_time=self.sim_params.elapsed_time,
             dt=self.sim_params.dt,
             num_traj=self.sim_params.num_traj,
@@ -1139,16 +1141,18 @@ class Propagator:
 
         simulator.run(self.init_state, self.hamiltonian, sim_params, noise_model.expanded_noise_model)
 
-        # Split results: first n_original_obs entries are original obs, the rest are gradient obs.
         all_obs = sim_params.observables
         self.obs_traj = all_obs[:n_original_obs]
-        self.gradient_obs_traj = cast("list[_GradientObservable]", all_obs[n_original_obs:])
 
         self.times = self.sim_params.times
 
         self.obs_array = np.array([obs.results for obs in self.obs_traj])
 
-        n_lags = self.n_t - 1
-        self.gradient_obs_array = np.zeros((self.n_obs, self.n_jump, n_lags, self.n_t))
-        for grad_obs in self.gradient_obs_traj:
-            self.gradient_obs_array[grad_obs.n_obs_idx, grad_obs.l_jump_idx, grad_obs.i_lag, :] = grad_obs.results
+        if self.compute_gradient_obs:
+            self.gradient_obs_traj = cast("list[_GradientObservable]", all_obs[n_original_obs:])
+            n_lags = self.n_t - 1
+            self.gradient_obs_array = np.zeros((self.n_obs, self.n_jump, n_lags, self.n_t))
+            for grad_obs in self.gradient_obs_traj:
+                self.gradient_obs_array[
+                    grad_obs.n_obs_idx, grad_obs.l_jump_idx, grad_obs.i_lag, :
+                ] = grad_obs.results
