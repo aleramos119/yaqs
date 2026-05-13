@@ -54,7 +54,6 @@ class LossClass:
         num_traj: Callable[[int], int] = lineal_function_1000,
         print_to_file: bool = False,
         return_numeric_gradients: bool = False,
-        return_analytical_gradients: bool = False,
         n_neumann: int = 2,
         epsilon: float = 1e-3,
     ) -> None:
@@ -68,7 +67,6 @@ class LossClass:
                                                     evaluation count. Default lineal_function_1000.
             print_to_file (bool, optional): If True, enables printing output to a file. Default False.
             return_numeric_gradients (bool, optional): If True, compute gradients numerically. Default False.
-            return_analytical_gradients (bool, optional): If True, compute gradients analytically. Default False.
             n_neumann (int, optional): Neumann expansion order for gradient computation. Default 2.
             epsilon (float, optional): Step size for numerical gradients. Default 1e-3.
 
@@ -119,7 +117,7 @@ class LossClass:
 
         self.return_numeric_gradients = return_numeric_gradients
 
-        self.return_analytical_gradients = return_analytical_gradients
+        self.return_analytical_gradients = self.propagator.compute_gradient_obs
 
         self.n_neumann = n_neumann
 
