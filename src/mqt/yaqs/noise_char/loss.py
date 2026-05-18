@@ -414,6 +414,8 @@ class LossClass:
 
             grad = 2 * self.loss_scale_factor * np.einsum("nt,ndt->d", diff, d_on_d_gl)
 
+            self.post_process(x.copy(), loss, grad.copy())
+
             return loss, grad, sim_time
 
         if self.return_numeric_gradients:

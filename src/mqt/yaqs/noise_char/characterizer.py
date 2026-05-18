@@ -185,7 +185,8 @@ class Characterizer:
         >>> # run with a smaller learning rate and more iterations
         >>> obj.adam_optimize(alpha=0.01, max_iter=1000)
         """
-        self.loss.return_numeric_gradients = True
+        if not self.loss.return_analytical_gradients:
+            self.loss.return_numeric_gradients = True
 
         self.loss.epsilon = h
 

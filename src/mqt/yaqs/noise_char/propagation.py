@@ -965,6 +965,12 @@ class Propagator:
             msg = "Call set_observable_list before append_gradient_observables."
             raise ValueError(msg)
 
+        # Gradient MPOs must be compressed at every Kraus application to avoid
+        # exponential bond-dimension growth over the n_t-1 backward time lags.
+        compress = True
+        if max_bond_dim is None:
+            max_bond_dim = self.sim_params.max_bond_dim
+
         d = self.hamiltonian.physical_dimension
         n_lags = self.n_t - 1  # i = 0 .. n_t - 2
 
@@ -1115,7 +1121,7 @@ class Propagator:
                     msg = "Noise model processes or sites do not match the initialized noise model."
                     raise ValueError(msg)
 
-        n_original_obs = len(self.obs_list)
+        n_original_obs = self.n_obs
 
         if self.compute_gradient_obs:
             # Re-build gradient observables fresh for this run (clears any from a prior call).
