@@ -56,6 +56,7 @@ class LossClass:
         return_numeric_gradients: bool = False,
         n_neumann: int = 2,
         epsilon: float = 1e-3,
+        compare_gradients: bool = False,
     ) -> None:
         """Initializes the optimization class for noise characterization.
 
@@ -118,6 +119,8 @@ class LossClass:
         self.return_numeric_gradients = return_numeric_gradients
 
         self.return_analytical_gradients = self.propagator.compute_gradient_obs
+
+        self.compare_gradients = compare_gradients
 
         self.n_neumann = n_neumann
 
@@ -340,6 +343,25 @@ class LossClass:
 
         np.savetxt(output_file, exp_vals_traj_with_t.T, header=header, fmt="%.6f")
 
+    def _compute_numeric_grad(self, x: np.ndarray, loss: float) -> np.ndarray:
+        grad = np.zeros_like(x)
+
+        for i in range(len(x)):
+            x_plus = x.copy()
+            x_plus[i] += self.epsilon
+
+            noise_model_plus = self.x_to_noise_model(x_plus)
+
+            self.propagator.run(noise_model_plus, self.n_neumann)
+            obs_array_plus = copy.deepcopy(self.propagator.obs_array)
+
+            diff_plus = obs_array_plus - self.ref_traj_array
+            loss_plus = np.sum(diff_plus**2) * self.loss_scale_factor
+
+            grad[i] = (loss_plus - loss) / self.epsilon
+
+        return grad
+
     def x_to_noise_model(self, x: np.ndarray) -> CompactNoiseModel:
         """Converts the optimization variable x to a CompactNoiseModel instance.
 
@@ -414,26 +436,24 @@ class LossClass:
 
             grad = 2 * self.loss_scale_factor * np.einsum("nt,ndt->d", diff, d_on_d_gl)
 
+            self.analytical_grad = grad.copy()
+
+            if self.compare_gradients:
+                numeric_grad = self._compute_numeric_grad(x, loss)
+
+                self.numeric_grad = numeric_grad.copy()
+
+                print(f"[grad comparison] iter={self.n_eval}")
+                for i in range(self.d):
+                    rel_err = abs(grad[i] - numeric_grad[i]) / (abs(numeric_grad[i]) + 1e-30)
+                    print(f"  x[{i}]: analytical={grad[i]:.6e}  numeric={numeric_grad[i]:.6e}  rel_err={rel_err:.3e}")
+
             self.post_process(x.copy(), loss, grad.copy())
 
             return loss, grad, sim_time
 
         if self.return_numeric_gradients:
-            grad = np.zeros_like(x)
-
-            for i in range(len(x)):
-                x_plus = x.copy()
-                x_plus[i] += self.epsilon
-
-                noise_model_plus = self.x_to_noise_model(x_plus)
-
-                self.propagator.run(noise_model_plus, self.n_neumann)
-                obs_array_plus = copy.deepcopy(self.propagator.obs_array)
-
-                diff_plus = obs_array_plus - self.ref_traj_array
-                loss_plus = np.sum(diff_plus**2) * self.loss_scale_factor
-
-                grad[i] = (loss_plus - loss) / self.epsilon
+            grad = self._compute_numeric_grad(x, loss)
 
             self.post_process(x.copy(), loss, grad.copy())
 
