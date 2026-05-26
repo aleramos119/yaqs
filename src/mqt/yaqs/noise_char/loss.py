@@ -392,7 +392,6 @@ class LossClass:
 
         self.obs_array = copy.deepcopy(self.propagator.obs_array)
 
-        self.gradient_obs_array = copy.deepcopy(self.propagator.gradient_obs_array)
 
         end_time = time.time()
 
@@ -403,6 +402,9 @@ class LossClass:
         sim_time = end_time - start_time  # Simulation time
 
         if self.return_analytical_gradients:
+
+            self.gradient_obs_array = copy.deepcopy(self.propagator.gradient_obs_array)
+
             d_on_d_gl = np.zeros((self.n_obs, self.d, self.n_t))
 
             d_on_d_gl[:, :, 0] = 0
