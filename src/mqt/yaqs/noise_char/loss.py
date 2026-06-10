@@ -352,7 +352,7 @@ class LossClass:
 
             noise_model_plus = self.x_to_noise_model(x_plus)
 
-            self.propagator.run(noise_model_plus, self.n_neumann)
+            self.propagator.run(noise_model_plus, n_neumann=self.n_neumann)
             obs_array_plus = copy.deepcopy(self.propagator.obs_array)
 
             diff_plus = obs_array_plus - self.ref_traj_array
@@ -410,7 +410,7 @@ class LossClass:
 
         self.propagator.sim_params.num_traj = self.num_traj(self.n_eval)
 
-        self.propagator.run(noise_model, self.n_neumann)
+        self.propagator.run(noise_model, n_neumann=self.n_neumann)
 
         self.obs_array = copy.deepcopy(self.propagator.obs_array)
 

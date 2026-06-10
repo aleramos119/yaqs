@@ -1057,8 +1057,8 @@ class Propagator:
     def run(
         self,
         noise_model: CompactNoiseModel,
-        n_neumann: int,
         *,
+        n_neumann: int = 1,
         compress: bool = False,
         tol: float = 1e-12,
         max_bond_dim: int | None = None,
